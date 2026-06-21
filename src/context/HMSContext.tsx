@@ -187,7 +187,8 @@ const INITIAL_STAFF: StaffUser[] = [
   { id: "staff_2", name: "Alex Kalu", role: StaffRole.Manager, email: "alex.k@omnisuite.com", phone: "+234 810 555 5678", avatar: "🤵", status: "Active" },
   { id: "staff_3", name: "Evelyn Williams", role: StaffRole.Admin, email: "evelyn.w@omnisuite.com", phone: "+234 810 555 1111", avatar: "👩‍💻", status: "Active" },
   { id: "staff_4", name: "Musa Ibrahim", role: StaffRole.Housekeeping, email: "musa.i@omnisuite.com", phone: "+234 810 555 2222", avatar: "🧹", status: "Active" },
-  { id: "staff_5", name: "Bose Peters", role: StaffRole.Housekeeping, email: "bose.p@omnisuite.com", phone: "+234 810 555 3333", avatar: "🧽", status: "Off-Duty" }
+  { id: "staff_5", name: "Bose Peters", role: StaffRole.Housekeeping, email: "bose.p@omnisuite.com", phone: "+234 810 555 3333", avatar: "🧽", status: "Off-Duty" },
+  { id: "staff_6", name: "Chinedu Okafor", role: StaffRole.Accountant, email: "chinedu.o@omnisuite.com", phone: "+234 810 555 7777", avatar: "💰", status: "Active" }
 ];
 
 const INITIAL_SHIFTS: Shift[] = [

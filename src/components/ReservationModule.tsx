@@ -27,7 +27,8 @@ export const ReservationModule: React.FC = () => {
     packageBundles,
     createReservation,
     updateReservationStatus,
-    activeRole
+    activeRole,
+    saveGuest
   } = useHMS();
 
   // Search & Filter state
@@ -103,16 +104,15 @@ export const ReservationModule: React.FC = () => {
          return;
        }
        // Save to guest lists locally via context
-       const { saveGuest } = useHMS(); // we import or pull directly
-       // To maintain clean scope let's save the guest via our hms provider
-       const saved = useHMS().saveGuest({
+
+       const saved = saveGuest({
          firstName: newGuestFirst,
          lastName: newGuestLast,
          email: newGuestEmail,
          phone: newGuestPhone || "+1 555-0100",
          idType: "Driver License",
          idNumber: "PENDING-ID-VERIFY",
-         loyaltyTier: useHMS().guests.length === 0 ? useHMS().guests[0]?.loyaltyTier : useHMS().guests[1]?.loyaltyTier || useHMS().guests[0]?.loyaltyTier
+         loyaltyTier: guests.length > 0 ? guests[0].loyaltyTier : "Loyal Standard"
        });
        finalGuestId = saved.id;
        finalGuestName = `${saved.firstName} ${saved.lastName}`;

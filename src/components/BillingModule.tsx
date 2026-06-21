@@ -236,8 +236,7 @@ export const BillingModule: React.FC = () => {
       return;
     }
 
-    // Mutator
-    const { invoices: currentInvoices } = useHMS();
+    // Mutator applied directly to reference
     // We update local state in HMSContext but since we want to be clean and simple,
     // let's apply the discount. We can write an explicit log.
     // In our context: it accepts edits. Let's mutate discount value direct.

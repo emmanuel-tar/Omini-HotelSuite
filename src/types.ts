@@ -162,7 +162,8 @@ export enum StaffRole {
   Admin = "Admin",
   Receptionist = "Receptionist",
   Manager = "Manager",
-  Housekeeping = "Housekeeping"
+  Housekeeping = "Housekeeping",
+  Accountant = "Accountant"
 }
 
 export interface StaffUser {

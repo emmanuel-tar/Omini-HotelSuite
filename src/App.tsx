@@ -175,6 +175,7 @@ const MainHMSWorkspace: React.FC = () => {
               <option value={StaffRole.Manager}>Manager</option>
               <option value={StaffRole.Receptionist}>Clerk</option>
               <option value={StaffRole.Housekeeping}>Crews</option>
+              <option value={StaffRole.Accountant}>Auditor</option>
             </select>
           </div>
         </div>
