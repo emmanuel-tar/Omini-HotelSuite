@@ -1,0 +1,6 @@
+{
+  "name": "OmniSuite HMS",
+  "description": "Enterprise Hotel Management System. A cohesive SaaS dashboard featuring offline reservation calendars, front desk check-in/out key logs, dynamic room pricing sync, guest profiles (CRM), multi-currency invoice printing, package deal bundles, real-time inventory alerts, staff rotas with role play simulations, custom SVG reporting analytics, and multi-branch setting managers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
