@@ -15,7 +15,8 @@ import {
   Search,
   CheckCircle,
   AlertTriangle,
-  FileText
+  FileText,
+  Printer
 } from "lucide-react";
 
 export const ReceptionModule: React.FC = () => {
@@ -26,7 +27,9 @@ export const ReceptionModule: React.FC = () => {
     guests,
     hotelProfile,
     checkInReservation,
-    checkOutReservation
+    checkOutReservation,
+    printers,
+    addAuditLog
   } = useHMS();
 
   // Search state
@@ -42,6 +45,40 @@ export const ReceptionModule: React.FC = () => {
   const [checkingOutRes, setCheckingOutRes] = useState<Reservation | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(PaymentMethod.CreditCard);
   const [checkoutCurrency, setCheckoutCurrency] = useState("USD");
+
+  // Printer configuration integration inside Front Desk Checkout
+  const [selectedPrinterId, setSelectedPrinterId] = useState("prt_1");
+  const [isSpoolingPrint, setIsSpoolingPrint] = useState(false);
+  const [printStatusMsg, setPrintStatusMsg] = useState("");
+  const [checkoutStep, setCheckoutStep] = useState<"input" | "print-success">("input");
+  const [settledResInvoice, setSettledResInvoice] = useState<any>(null);
+
+  const closeCheckoutTerminal = () => {
+    setCheckingOutRes(null);
+    setCheckoutStep("input");
+    setSettledResInvoice(null);
+    setIsSpoolingPrint(false);
+    setPrintStatusMsg("");
+  };
+
+  const handleSimulatePrinterSpool = (invoiceId: string, guestName: string) => {
+    const selectedPr = printers.find(p => p.id === selectedPrinterId) || printers[0] || { name: "Front Desk Thermal" };
+    setIsSpoolingPrint(true);
+    setPrintStatusMsg("Establishing handshake with " + selectedPr.name + "...");
+    
+    setTimeout(() => {
+      setPrintStatusMsg("Spooling byte stream PDF raster vectors...");
+      setTimeout(() => {
+        setPrintStatusMsg("Cutting check-out folio invoice roll...");
+        setTimeout(() => {
+          setIsSpoolingPrint(false);
+          setPrintStatusMsg("");
+          addAuditLog("PRINTER", `Printed Checkout Folio (ResID: #${checkingOutRes?.id || "N/A"}) to: ${selectedPr.name}`);
+          alert(`SUCCESS: Checkout invoice spooled to ${selectedPr.name} successfully!`);
+        }, 800);
+      }, 800);
+    }, 800);
+  };
 
   // Filter reservations based on clerk search input
   const matchesSearch = (res: Reservation) => {
@@ -80,8 +117,42 @@ export const ReceptionModule: React.FC = () => {
     e.preventDefault();
     if (!checkingOutRes) return;
 
+    // Retrieve invoice before completing checkout
+    const invoice = getInvoiceForRes(checkingOutRes.id);
+    
+    // Process the actual checkout
     checkOutReservation(checkingOutRes.id, paymentMethod, checkoutCurrency);
-    setCheckingOutRes(null);
+    
+    setSettledResInvoice(invoice || {
+      id: "INV-CHOUT-" + Date.now().toString().slice(-4),
+      guestName: checkingOutRes.guestName,
+      roomCharges: 250,
+      serviceCharges: 50,
+      taxes: 36,
+      discount: 0,
+      total: 336,
+      payments: []
+    });
+
+    // Go to printing & confirmation step
+    setCheckoutStep("print-success");
+
+    // Automatically trigger printing simulation in settings-configured printer
+    const selectedPr = printers.find(p => p.id === selectedPrinterId) || printers[0] || { name: "Front Desk Thermal" };
+    setIsSpoolingPrint(true);
+    setPrintStatusMsg("Establishing handshake with " + selectedPr.name + "...");
+    
+    setTimeout(() => {
+      setPrintStatusMsg("Rasterizing thermal fonts...");
+      setTimeout(() => {
+        setPrintStatusMsg("Transmitting TCP packets pool...");
+        setTimeout(() => {
+          setIsSpoolingPrint(false);
+          setPrintStatusMsg("");
+          addAuditLog("PRINTER", `Printed Checkout Folio (Invoice: #${invoice?.id || "N/A"}) to: ${selectedPr.name}`);
+        }, 800);
+      }, 800);
+    }, 800);
   };
 
   // Get invoice details for checkouts
@@ -323,104 +394,232 @@ export const ReceptionModule: React.FC = () => {
       {/* CHECK-OUT BILLING BILL DIALOG */}
       {checkingOutRes && (
         <div className="fixed inset-0 z-50 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white p-6 rounded-xl border border-slate-200 max-w-sm w-full shadow-2xl relative text-left">
-            <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
-              <LogOut className="w-4 h-4 text-emerald-600" />
-              Settlement Checkout Terminal
-            </h3>
+          <div className="bg-white p-6 rounded-xl border border-slate-200 max-w-md w-full shadow-2xl relative text-left">
+            
+            {checkoutStep === "input" ? (
+              <>
+                <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2 border-b border-slate-100 pb-3 mb-4">
+                  <LogOut className="w-4 h-4 text-emerald-600" />
+                  Settlement Checkout Terminal
+                </h3>
 
-            {(() => {
-              const invoice = getInvoiceForRes(checkingOutRes.id);
-              const totalPaid = invoice ? invoice.payments.reduce((acc, p) => acc + p.amount, 0) : 0;
-              const usdBalance = invoice ? Math.max(0, invoice.total - totalPaid) : 0;
-              const convertedPayment = convertUSDToLocal(usdBalance, checkoutCurrency);
+                {(() => {
+                  const invoice = getInvoiceForRes(checkingOutRes.id);
+                  const totalPaid = invoice ? invoice.payments.reduce((acc, p) => acc + p.amount, 0) : 0;
+                  const usdBalance = invoice ? Math.max(0, invoice.total - totalPaid) : 0;
+                  const convertedPayment = convertUSDToLocal(usdBalance, checkoutCurrency);
 
-              return (
-                <form onSubmit={handleCheckoutSubmit} className="space-y-4">
-                  <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100 space-y-1.5 text-xs text-slate-600">
-                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Checkout Folio Summary</p>
-                    <p>Guest: <strong className="text-slate-800">{checkingOutRes.guestName}</strong></p>
-                    <p>Assigned Room: <strong className="text-slate-800">Room {checkingOutRes.roomNumber}</strong></p>
-                    
-                    {invoice && (
-                      <div className="pt-2 border-t border-slate-200 space-y-1 text-slate-600">
-                        <p className="flex justify-between"><span>Room Charges:</span><span>${invoice.roomCharges}</span></p>
-                        <p className="flex justify-between"><span>Service Charges:</span><span>${invoice.serviceCharges}</span></p>
-                        <p className="flex justify-between"><span>Taxes ({hotelProfile.taxRate}%):</span><span>${invoice.taxes}</span></p>
-                        <p className="flex justify-between font-bold text-slate-800 border-t border-slate-150 pt-1">
-                          <span>Invoice Total:</span><span>${invoice.total}</span>
-                        </p>
-                        <p className="flex justify-between text-emerald-600">
-                          <span>Total Paid (USD):</span><span>-${totalPaid.toFixed(2)}</span>
-                        </p>
-                        <p className="flex justify-between font-bold text-amber-700 bg-amber-50 p-1.5 rounded mt-1.5">
-                          <span>Settle Balance:</span><span>${usdBalance.toFixed(2)}</span>
-                        </p>
+                  return (
+                    <form onSubmit={handleCheckoutSubmit} className="space-y-4">
+                      <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100 space-y-1.5 text-xs text-slate-600">
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Checkout Folio Summary</p>
+                        <p>Guest: <strong className="text-slate-800">{checkingOutRes.guestName}</strong></p>
+                        <p>Assigned Room: <strong className="text-slate-800">Room {checkingOutRes.roomNumber}</strong></p>
+                        
+                        {invoice && (
+                          <div className="pt-2 border-t border-slate-200 space-y-1 text-slate-600">
+                            <p className="flex justify-between"><span>Room Charges:</span><span>${invoice.roomCharges}</span></p>
+                            <p className="flex justify-between"><span>Service Charges:</span><span>${invoice.serviceCharges}</span></p>
+                            <p className="flex justify-between"><span>Taxes ({hotelProfile.taxRate}%):</span><span>${invoice.taxes}</span></p>
+                            <p className="flex justify-between font-bold text-slate-800 border-t border-slate-150 pt-1">
+                              <span>Invoice Total:</span><span>${invoice.total}</span>
+                            </p>
+                            <p className="flex justify-between text-emerald-600">
+                              <span>Total Paid (USD):</span><span>-${totalPaid.toFixed(2)}</span>
+                            </p>
+                            <p className="flex justify-between font-bold text-amber-700 bg-amber-50 p-1.5 rounded mt-1.5">
+                              <span>Settle Balance:</span><span>${usdBalance.toFixed(2)}</span>
+                            </p>
+                          </div>
+                        )}
                       </div>
-                    )}
+
+                      {/* Hardware printer routing selection pre-setup */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Hardware Router Device</label>
+                        <select
+                          className="text-xs text-slate-650 w-full border border-slate-200 rounded-lg p-2.5 bg-white font-mono font-bold"
+                          value={selectedPrinterId}
+                          onChange={(e) => setSelectedPrinterId(e.target.value)}
+                        >
+                          {printers.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              🖨️ {p.name} ({p.type}) &mdash; {p.location}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Currency Selection for payment */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Settle Currency</label>
+                          <select
+                            className="text-xs text-slate-650 w-full border border-slate-200 rounded-lg p-2.5 bg-white"
+                            value={checkoutCurrency}
+                            onChange={(e) => setCheckoutCurrency(e.target.value)}
+                          >
+                            {hotelProfile.currencies.map((cur) => (
+                              <option key={cur.code} value={cur.code}>
+                                {cur.code} ({cur.symbol})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Payment Method</label>
+                          <select
+                            className="text-xs text-slate-650 w-full border border-slate-200 rounded-lg p-2.5 bg-white"
+                            value={paymentMethod}
+                            onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                          >
+                            <option value={PaymentMethod.CreditCard}>Credit Card</option>
+                            <option value={PaymentMethod.Cash}>Cash Payment</option>
+                            <option value={PaymentMethod.BankTransfer}>Bank Wire Transfer</option>
+                            <option value={PaymentMethod.MobileMoney}>Mobile Money (MPesa/OPay)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Local Amount Preview */}
+                      {usdBalance > 0 && (
+                        <div className="bg-emerald-50 text-emerald-800 p-2.5 rounded-lg flex items-center justify-between text-xs font-semibold">
+                          <span>Total localized collection: </span>
+                          <span className="text-sm font-bold text-emerald-950 font-mono">
+                            {convertedPayment.symbol}{convertedPayment.amount.toLocaleString([], { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="flex justify-end gap-2 pt-2 border-t border-slate-150">
+                        <button
+                          type="button"
+                          className="border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg px-3 py-1.5 hover:bg-slate-50 transition"
+                          onClick={closeCheckoutTerminal}
+                        >
+                          Exit Terminal
+                        </button>
+                        <button
+                          type="submit"
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg px-4 py-1.5 transition flex items-center gap-1 cursor-pointer"
+                          id="btn-reception-settle"
+                        >
+                          Settle &amp; Deactivate Fobs
+                        </button>
+                      </div>
+                    </form>
+                  );
+                })()}
+              </>
+            ) : (
+              // STEP 2: PRINT FOLIO CONFIRMATION & HARDWARE INTEGRATION VIEW
+              <div className="space-y-4">
+                <div className="text-center space-y-1.5">
+                  <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto border border-emerald-100">
+                    <CheckCircle className="w-6 h-6 text-emerald-600" />
+                  </div>
+                  <h3 className="font-extrabold text-slate-800 text-base">Checkout Folio Settled!</h3>
+                  <p className="text-xs text-slate-500 leading-normal">
+                    Fobs deactivated. Standard cleaning task spooled. Dynamic receipt output ready.
+                  </p>
+                </div>
+
+                {/* Simulated connected printer status info */}
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-2.5 text-xs">
+                  <span className="text-[9px] uppercase tracking-wider font-extrabold text-slate-450 block">🖨️ Settings-Configured Device Router</span>
+                  
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-slate-500">Selected Device:</span>
+                    <strong className="text-slate-850 truncate font-mono">
+                      {printers.find(p => p.id === selectedPrinterId)?.name || printers[0]?.name || "System Thermal printer"}
+                    </strong>
                   </div>
 
-                  {/* Currency Selection for payment */}
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Settle Currency</label>
-                      <select
-                        className="text-xs text-slate-650 w-full border border-slate-200 rounded-lg p-2.5 bg-white"
-                        value={checkoutCurrency}
-                        onChange={(e) => setCheckoutCurrency(e.target.value)}
-                      >
-                        {hotelProfile.currencies.map((cur) => (
-                          <option key={cur.code} value={cur.code}>
-                            {cur.code} ({cur.symbol})
-                          </option>
-                        ))}
-                      </select>
+                  {isSpoolingPrint ? (
+                    <div className="bg-indigo-50 border border-indigo-150 p-2.5 rounded-lg space-y-2 animate-pulse mt-1">
+                      <div className="flex justify-between items-center text-[10.5px] font-bold text-indigo-800">
+                        <span>{printStatusMsg}</span>
+                        <span className="font-mono text-[9px] bg-indigo-100 px-1 py-0.2 rounded">SPOOLING</span>
+                      </div>
+                      <div className="w-full bg-indigo-100 h-1 rounded-full overflow-hidden">
+                        <div className="bg-indigo-600 h-full w-4/5 animate-infinite"></div>
+                      </div>
                     </div>
-
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Payment Method</label>
-                      <select
-                        className="text-xs text-slate-650 w-full border border-slate-200 rounded-lg p-2.5 bg-white"
-                        value={paymentMethod}
-                        onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                  ) : (
+                    <div className="grid grid-cols-1 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleSimulatePrinterSpool(settledResInvoice?.id, settledResInvoice?.guestName || checkingOutRes.guestName)}
+                        className="bg-white border border-slate-200.5 hover:bg-slate-100 text-slate-700 font-bold px-2 py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition text-[11px] cursor-pointer"
                       >
-                        <option value={PaymentMethod.CreditCard}>Credit Card</option>
-                        <option value={PaymentMethod.Cash}>Cash Payment</option>
-                        <option value={PaymentMethod.BankTransfer}>Bank Wire Transfer</option>
-                        <option value={PaymentMethod.MobileMoney}>Mobile Money (MPesa/OPay)</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Local Amount Preview */}
-                  {usdBalance > 0 && (
-                    <div className="bg-emerald-50 text-emerald-800 p-2.5 rounded-lg flex items-center justify-between text-xs font-semibold">
-                      <span>Total localized collection: </span>
-                      <span className="text-sm font-bold text-emerald-950 font-mono">
-                        {convertedPayment.symbol}{convertedPayment.amount.toLocaleString([], { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </span>
+                        <Printer className="w-3.5 h-3.5 text-slate-500" />
+                        Re-Submit to Setting Printer
+                      </button>
                     </div>
                   )}
+                </div>
 
-                  <div className="flex justify-end gap-2 pt-2 border-t border-slate-150">
-                    <button
-                      type="button"
-                      className="border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg px-3 py-1.5 hover:bg-slate-50 transition"
-                      onClick={() => setCheckingOutRes(null)}
-                    >
-                      Exit Terminal
-                    </button>
-                    <button
-                      type="submit"
-                      className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg px-4 py-1.5 transition flex items-center gap-1"
-                      id="btn-reception-settle"
-                    >
-                      Settle &amp; Deactivate Fobs
-                    </button>
+                {/* System Attached Real Computer Printer Section */}
+                <div className="bg-emerald-50/55 p-3.5 rounded-xl border border-emerald-150 space-y-2 text-xs text-slate-700">
+                  <span className="text-[9px] uppercase tracking-wider font-extrabold text-emerald-800 block">🖥️ Physical Printer Attached to Device</span>
+                  <p className="text-[10px] leading-relaxed text-emerald-900 font-normal">
+                    To output an high-contrast receipt folio on the physical hardware printer and drivers directly hooked to this computer/app.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.print();
+                      addAuditLog("PRINTER", `Triggered browser-attached computer printing for Invoice PDF #${settledResInvoice?.id || "N/A"}`);
+                    }}
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-2 px-3 rounded-lg flex items-center justify-center gap-2 transition text-xs shadow-sm cursor-pointer"
+                  >
+                    <Printer className="w-4 h-4" />
+                    Print to Attached Local Printer (Browser)
+                  </button>
+                </div>
+
+                {/* Mini Printed Receipt Slip Template */}
+                <div className="border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/30 text-[11px] font-mono leading-relaxed text-slate-700 my-2 shadow-inner">
+                  <div className="text-center font-bold text-xs uppercase tracking-widest border-b border-slate-250 pb-2 mb-2">
+                    {hotelProfile.name || "HMS HOTEL SYSTEM"}
+                    <span className="block text-[9.5px] font-normal leading-relaxed text-slate-500 tracking-normal italic mt-0.5">CHECKOUT RECEIPT FOLIO</span>
                   </div>
-                </form>
-              );
-            })()}
+                  
+                  <div className="space-y-1 font-mono text-[10.5px]">
+                    <p>INVOICE REF : {settledResInvoice?.id || "INV-GEN"}</p>
+                    <p>CLIENT GUEST: {settledResInvoice?.guestName || checkingOutRes.guestName}</p>
+                    <p>ROOM NUMBER : Room {checkingOutRes.roomNumber}</p>
+                    <p>METHOD CODES: {paymentMethod} ({checkoutCurrency})</p>
+                    <div className="border-t border-dashed border-slate-250 my-2 pt-2 space-y-1">
+                      <div className="flex justify-between"><span>LODGING RATE :</span><span>${settledResInvoice?.roomCharges || 0}</span></div>
+                      <div className="flex justify-between"><span>AMENITIES DU :</span><span>${settledResInvoice?.serviceCharges || 0}</span></div>
+                      <div className="flex justify-between"><span>TAXES STATS :</span><span>${settledResInvoice?.taxes || 0}</span></div>
+                      {settledResInvoice?.discount > 0 && (
+                        <div className="flex justify-between text-red-650"><span>REBATES DISC :</span><span>-${settledResInvoice?.discount}</span></div>
+                      )}
+                      <div className="flex justify-between font-bold text-slate-800 border-t border-slate-200 pt-1">
+                        <span>NET GRAND TOT:</span><span>${settledResInvoice?.total || 0}</span>
+                      </div>
+                    </div>
+                    <div className="text-center font-bold text-emerald-700 bg-emerald-50/60 p-1.5 rounded-md mt-3 tracking-widest border border-emerald-120">
+                      💰 COMPLIMENTARY PAID & OFF LEDGER
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={closeCheckoutTerminal}
+                    className="bg-slate-800 hover:bg-slate-900 text-white font-semibold text-xs rounded-lg px-5 py-2 cursor-pointer transition shadow-xs"
+                  >
+                    Done &amp; Exit Terminal
+                  </button>
+                </div>
+              </div>
+            )}
+
           </div>
         </div>
       )}

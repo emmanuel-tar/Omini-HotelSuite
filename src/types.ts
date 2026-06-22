@@ -74,6 +74,8 @@ export interface Guest {
   address?: string;
   preferences?: string[];
   notes?: string;
+  creditBalance?: number; // USD, default 0
+  prepaymentBalance?: number; // USD, default 0
 }
 
 export enum InvoiceStatus {
@@ -219,3 +221,26 @@ export interface HotelProfile {
   }[];
   defaultCurrencyCode?: string;
 }
+
+export interface PrinterConfig {
+  id: string;
+  name: string;
+  location: string; // e.g. "Front Desk", "Accounting", "Restaurant"
+  type: string;     // e.g. "Thermal", "Inkjet", "Laser", "Thermal Roll 80mm", etc.
+  isDefault: boolean;
+  status: "Online" | "Offline" | "In Use";
+  connection?: string;
+  ip?: string;
+  assignedRole?: string;
+}
+
+export interface Prepayment {
+  id: string;
+  guestId: string;
+  reservationId: string;
+  amount: number;
+  method: PaymentMethod;
+  date: string;
+  notes?: string;
+}
+

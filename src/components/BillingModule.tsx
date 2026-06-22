@@ -26,12 +26,14 @@ export const BillingModule: React.FC = () => {
     hotelProfile,
     addPaymentToInvoice,
     addAuditLog,
-    reservations
+    reservations,
+    printers
   } = useHMS();
 
   // state
   const [billSearch, setBillSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
+  const [billingTab, setBillingTab] = useState<"active" | "history">("active");
 
   // Selection for action dialog
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
@@ -45,6 +47,13 @@ export const BillingModule: React.FC = () => {
 
   // Print Receipt preview state
   const [printInvoice, setPrintInvoice] = useState<Invoice | null>(null);
+
+  // Printer configuration integration inside BillingModule
+  const [selectedPrinterId, setSelectedPrinterId] = useState("prt_1");
+  const [isSpoolingPrint, setIsSpoolingPrint] = useState(false);
+  const [printStatusMsg, setPrintStatusMsg] = useState("");
+  const [isEmailing, setIsEmailing] = useState(false);
+  const [emailInput, setEmailInput] = useState("");
 
   // MetaMask Web3 Integration States
   const [walletConnected, setWalletConnected] = useState(false);
@@ -119,11 +128,21 @@ export const BillingModule: React.FC = () => {
     setIsSimulatedWallet(false);
   };
 
+  // helper to trace stay status
+  const getReservationForInvoice = (resId: string) => {
+    return reservations.find((r) => r.id === resId);
+  };
+
   // filter
   const filteredInvoices = invoices.filter((inv) => {
     const matchesSearch = inv.guestName.toLowerCase().includes(billSearch.toLowerCase()) || inv.id.includes(billSearch);
     const matchesStatus = statusFilter === "ALL" || inv.status === statusFilter;
-    return matchesSearch && matchesStatus;
+    
+    const res = getReservationForInvoice(inv.reservationId);
+    const isHistory = inv.status === InvoiceStatus.Paid || inv.status === InvoiceStatus.Refunded || res?.status === ReservationStatus.CheckedOut;
+    const matchesTab = billingTab === "history" ? isHistory : !isHistory;
+    
+    return matchesSearch && matchesStatus && matchesTab;
   });
 
   // Calculate local currency rates
@@ -266,8 +285,39 @@ export const BillingModule: React.FC = () => {
   };
 
   const simulatePrintReceipt = () => {
-    // Standard quick alert mockup or browser print overlay trigger
-    window.print();
+    if (!printInvoice) return;
+    setIsSpoolingPrint(true);
+    setPrintStatusMsg("Initializing secure thermal buffer pool...");
+    
+    setTimeout(() => {
+      const selectedPr = printers.find(p => p.id === selectedPrinterId) || printers[0] || { name: "System Default spooler" };
+      setPrintStatusMsg(`Connecting to [${selectedPr.name}] queue routing port...`);
+      setTimeout(() => {
+        setPrintStatusMsg(`Transmitting TCP bitmap raster packets payload [1/3]...`);
+        setTimeout(() => {
+          setPrintStatusMsg(`Finalizing byte cuts on thermal rolling device queue...`);
+          setTimeout(() => {
+            setIsSpoolingPrint(false);
+            setPrintStatusMsg("");
+            addAuditLog("PRINTER", `Printed Folio Invoice Receipt #${printInvoice.id} to connected queue: ${selectedPr.name}`);
+            alert(`SUCCESS: Invoice Ref #${printInvoice.id} printed to ${selectedPr.name} successfully!`);
+          }, 800);
+        }, 800);
+      }, 800);
+    }, 800);
+  };
+
+  const executeEmailReceipt = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!printInvoice || !emailInput.trim()) return;
+    setIsEmailing(true);
+    
+    setTimeout(() => {
+      setIsEmailing(false);
+      addAuditLog("FINANCE", `Emailed HTML invoice carbon-copy #${printInvoice.id} to ${emailInput}`);
+      alert(`SUCCESS: Dynamic HTML invoice receipt #${printInvoice.id} has been transmitted to ${emailInput}!`);
+      setEmailInput("");
+    }, 1200);
   };
 
   return (
@@ -297,9 +347,43 @@ export const BillingModule: React.FC = () => {
 
       {/* Main Grid table */}
       <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-xs" id="billing-invoices-box">
+        {/* Modern navigation subtabs for active folios and historical archives */}
+        <div className="flex flex-wrap items-center border-b border-slate-150 pb-0.5 mb-5 gap-6">
+          <button
+            type="button"
+            onClick={() => {
+              setBillingTab("active");
+              setStatusFilter("ALL");
+            }}
+            className={`pb-3 text-xs font-bold uppercase tracking-wider transition-all cursor-pointer relative ${
+              billingTab === "active"
+                ? "text-indigo-600 border-b-2 border-indigo-600 font-extrabold"
+                : "text-slate-450 hover:text-slate-700 font-semibold"
+            }`}
+          >
+            📂 Active Guest Folios &amp; Open Balances
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setBillingTab("history");
+              setStatusFilter("ALL");
+            }}
+            className={`pb-3 text-xs font-bold uppercase tracking-wider transition-all cursor-pointer relative ${
+              billingTab === "history"
+                ? "text-indigo-600 border-b-2 border-indigo-600 font-extrabold"
+                : "text-slate-450 hover:text-slate-700 font-semibold"
+            }`}
+          >
+            📜 Historical Invoices Archive (Reprint History)
+          </button>
+        </div>
+
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5">
           <div className="flex items-center gap-3">
-            <h3 className="font-semibold text-slate-700 text-sm tracking-tight">Active Customer Folios</h3>
+            <h3 className="font-semibold text-slate-700 text-sm tracking-tight">
+              {billingTab === "active" ? "Active Customer Folios" : "Historical Invoices Archive"}
+            </h3>
             <span className="bg-slate-100 text-slate-600 text-xs px-2.5 py-0.5 rounded-full font-bold font-mono">
               {filteredInvoices.length} registers
             </span>
@@ -355,14 +439,26 @@ export const BillingModule: React.FC = () => {
             <tbody className="divide-y divide-slate-50 bg-white">
               {filteredInvoices.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="text-center py-10 text-slate-400">
-                    No matching billing folios found in database. Check-ins auto-generate invoices.
+                  <td colSpan={11} className="text-center py-12 text-slate-400 bg-slate-50/20">
+                    {billingTab === "active" ? (
+                      <div className="space-y-1">
+                        <p className="font-bold text-slate-500 text-xs">📂 No Active Guest Folios</p>
+                        <p className="text-[10.5px]">There are currently no active or unsettled billing folios matching your query. Room check-ins automatically register active folios.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <p className="font-bold text-slate-500 text-xs">📜 Historical Invoices Archive Empty</p>
+                        <p className="text-[10.5px]">No completed or historical checked-out billing invoices match your search. Guests completing checkout will automatically store here for instant reprint.</p>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ) : (
                 filteredInvoices.map((inv) => {
                   const totalPaid = inv.payments.reduce((acc, p) => acc + p.amount, 0);
                   const balanceInUSD = Math.max(0, inv.total - totalPaid);
+                  const relatedRes = getReservationForInvoice(inv.reservationId);
+                  const resStatus = relatedRes?.status;
 
                   let badgeColor = "bg-red-50 text-red-700";
                   if (inv.status === InvoiceStatus.Paid) badgeColor = "bg-emerald-50 text-emerald-800";
@@ -372,7 +468,20 @@ export const BillingModule: React.FC = () => {
                   return (
                     <tr key={inv.id} className="hover:bg-slate-50/50 transition">
                       <td className="py-3 px-4 font-mono font-semibold text-slate-800">{inv.id}</td>
-                      <td className="py-3 px-4 font-semibold text-slate-800">{inv.guestName}</td>
+                      <td className="py-3 px-4 font-semibold text-slate-800">
+                        <div>{inv.guestName}</div>
+                        {resStatus && (
+                          <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono uppercase inline-block mt-0.5 font-bold ${
+                            resStatus === ReservationStatus.CheckedOut
+                              ? "bg-slate-100 text-slate-500 border border-slate-200"
+                              : resStatus === ReservationStatus.CheckedIn
+                              ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
+                              : "bg-blue-50 text-blue-700 border border-blue-100"
+                          }`}>
+                            Stay Status: {resStatus}
+                          </span>
+                        )}
+                      </td>
                       <td className="py-3 px-4 text-slate-450">{inv.date}</td>
                       <td className="py-3 px-4 text-slate-500">{formatUSD(inv.roomCharges)}</td>
                       <td className="py-3 px-4 text-slate-500">{formatUSD(inv.serviceCharges)}</td>
@@ -788,22 +897,116 @@ export const BillingModule: React.FC = () => {
               </div>
             </div>
 
+            {/* Interactive hardware print spools & SMTP mail dispatch logs */}
+            <div className="mt-4 pt-4 border-t border-slate-150 space-y-4 print:hidden text-xs">
+              <div className="bg-slate-50 p-3 rounded-lg border border-slate-150 space-y-3">
+                <span className="text-[10px] uppercase font-black tracking-wider text-slate-550 block">🔧 Spooler routing & Digital SMTP</span>
+                
+                {/* Physical Browser Printer section */}
+                <div className="bg-emerald-50/50 p-2.5 rounded-md border border-emerald-100 space-y-1.5 text-[11px] text-slate-700">
+                  <span className="text-[9px] uppercase tracking-wider font-extrabold text-emerald-800 block">🖥️ Physical Printer (Browser Print)</span>
+                  <p className="text-[10px] leading-snug text-emerald-950 font-normal">
+                    Directly print this invoice layout or save it as PDF using your browser's native print modal and hardware computer printers.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      addAuditLog("PRINTER", `Triggered browser-attached computer printing for Invoice PDF #${printInvoice.id}`);
+                      window.print();
+                    }}
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-1.5 px-3 rounded-md flex items-center justify-center gap-1.5 transition text-xs shadow-xs cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    Print to Attached Local Printer (Browser)
+                  </button>
+                </div>
+
+                {/* Select targeted printer */}
+                <div className="space-y-1">
+                  <label className="text-[9.5px] font-bold text-slate-500 uppercase">Target Printer Device</label>
+                  <select
+                    className="p-1.5 border border-slate-205 rounded-md bg-white text-xs w-full text-slate-755 font-bold font-mono"
+                    value={selectedPrinterId}
+                    onChange={(e) => setSelectedPrinterId(e.target.value)}
+                  >
+                    {printers && printers.length > 0 ? (
+                      printers.map((pr) => (
+                        <option key={pr.id} value={pr.id}>
+                          🖨️ {pr.name} ({pr.type}) - {pr.ip}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="default">🖨️ Thermal Receipt Default (192.168.1.101)</option>
+                    )}
+                  </select>
+                </div>
+
+                {/* Email Transmit section */}
+                <form onSubmit={executeEmailReceipt} className="space-y-1">
+                  <label className="text-[9.5px] font-bold text-slate-500 uppercase">Dispatch Carbon Copy Email</label>
+                  <div className="flex gap-1.5">
+                    <input
+                      type="email"
+                      required
+                      placeholder="e.g. client@domain.com"
+                      className="p-1.5 border border-slate-205 rounded-md text-xs bg-white text-slate-700 flex-grow"
+                      value={emailInput}
+                      onChange={(e) => setEmailInput(e.target.value)}
+                    />
+                    <button
+                      type="submit"
+                      disabled={isEmailing}
+                      className="bg-slate-800 hover:bg-slate-900 text-white px-3 py-1.5 rounded-md font-bold text-[11px] shrink-0 disabled:bg-slate-300"
+                    >
+                      {isEmailing ? "Sending..." : "📧 Dispatch"}
+                    </button>
+                  </div>
+                </form>
+
+                {/* Printing simulated feedback state */}
+                {isSpoolingPrint && (
+                  <div className="bg-indigo-50 border border-indigo-150 p-2.5 rounded-md space-y-1.5 animate-pulse">
+                    <div className="flex justify-between text-[10px] font-bold text-indigo-800">
+                      <span>{printStatusMsg}</span>
+                      <span className="font-mono">ONLINE</span>
+                    </div>
+                    {/* Tiny Progress bar style */}
+                    <div className="w-full bg-indigo-100 h-1.5 rounded-full overflow-hidden">
+                      <div className="bg-indigo-650 h-full w-2/3 transition-all duration-1000"></div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Sim print controls */}
-            <div className="flex justify-end gap-2 mt-4 pt-4 border-t border-slate-200 print:hidden">
+            <div className="flex justify-end gap-2 mt-4 print:hidden">
               <button
                 type="button"
-                className="border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg px-4 py-2 hover:bg-slate-50"
+                className="border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg px-4 py-2 hover:bg-slate-50 cursor-pointer"
                 onClick={() => setPrintInvoice(null)}
               >
                 Close Receipt Fold
               </button>
               <button
                 type="button"
-                className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-4 py-2 text-xs font-semibold flex items-center gap-1"
+                className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg px-4 py-2 text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-sm"
+                onClick={() => {
+                  addAuditLog("PRINTER", `Triggered browser-attached computer printing for Invoice PDF #${printInvoice.id}`);
+                  window.print();
+                }}
+              >
+                <Printer className="w-3.5 h-3.5" />
+                Print via Browser
+              </button>
+              <button
+                type="button"
+                disabled={isSpoolingPrint}
+                className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-lg px-4 py-2 text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-sm"
                 onClick={simulatePrintReceipt}
               >
                 <Printer className="w-3.5 h-3.5" />
-                Trigger Folio Print
+                {isSpoolingPrint ? "Printing..." : "Trigger Folio Print"}
               </button>
             </div>
           </div>

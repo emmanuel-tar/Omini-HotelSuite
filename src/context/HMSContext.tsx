@@ -25,7 +25,9 @@ import {
   Shift,
   AuditLog,
   HotelProfile,
-  HotelBranch
+  HotelBranch,
+  PrinterConfig,
+  Prepayment
 } from "../types";
 
 interface HMSContextType {
@@ -50,11 +52,14 @@ interface HMSContextType {
   staff: StaffUser[];
   shifts: Shift[];
   auditLogs: AuditLog[];
-
+  printers: PrinterConfig[];
+  prepayments: Prepayment[];
+ 
   // Mutators & Core Actions
   updateHotelProfile: (profile: HotelProfile) => void;
   createReservation: (reservation: Omit<Reservation, "id" | "createdAt">) => Reservation;
   updateReservationStatus: (id: string, status: ReservationStatus) => void;
+  rescheduleReservation: (id: string, checkInDate: string, checkOutDate: string, roomNumber: string, totalAmount: number) => void;
   checkInReservation: (id: string, idType: string, idNumber: string, roomNumber: string) => void;
   checkOutReservation: (id: string, method: PaymentMethod, currencyCode: string) => void;
   updateRoomStatus: (id: string, status: RoomStatus) => void;
@@ -72,6 +77,11 @@ interface HMSContextType {
   updateStaffUserStatus: (id: string, status: "Active" | "Off-Duty" | "On-Leave") => void;
   addShift: (shift: Omit<Shift, "id">) => void;
   deleteShift: (id: string) => void;
+  addPrinter: (printer: Omit<PrinterConfig, "id">) => void;
+  updatePrinter: (id: string, updates: Partial<PrinterConfig>) => void;
+  deletePrinter: (id: string) => void;
+  recordPrepayment: (prepayment: Omit<Prepayment, "id" | "date">) => void;
+  adjustGuestCredit: (guestId: string, amount: number, notes: string) => void;
   addAuditLog: (action: string, detail: string) => void;
   clearAllData: () => void;
 }
@@ -151,6 +161,13 @@ const INITIAL_INVOICES: Invoice[] = [
     { id: "p_2", date: "2026-06-20", amount: 4895.5, method: PaymentMethod.BankTransfer, currency: "USD", transactionId: "TXN-773917492" }
   ] }
 ];
+
+const INITIAL_PRINTERS: PrinterConfig[] = [
+  { id: "prt_1", name: "Front Desk Thermal Reception", location: "Front Desk", type: "Thermal", isDefault: true, status: "Online" },
+  { id: "prt_2", name: "Accounting Main Billing Jet", location: "Accounting", type: "Laser", isDefault: false, status: "Online" },
+  { id: "prt_3", name: "Kitchen Culinary Orders", location: "Restaurant", type: "Thermal", isDefault: false, status: "Online" }
+];
+
 
 const INITIAL_SERVICES: ActivityService[] = [
   { id: "srv_1", name: "Deep Tissue Swedish Massage", category: "Spa", rate: 120, duration: "60 Mins", resourceName: "Therapy Room A" },
@@ -288,6 +305,16 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return saved ? JSON.parse(saved) : INITIAL_AUDITS;
   });
 
+  const [printers, setPrinters] = useState<PrinterConfig[]>(() => {
+    const saved = localStorage.getItem("hms_printers");
+    return saved ? JSON.parse(saved) : INITIAL_PRINTERS;
+  });
+
+  const [prepayments, setPrepayments] = useState<Prepayment[]>(() => {
+    const saved = localStorage.getItem("hms_prepayments");
+    return saved ? JSON.parse(saved) : [];
+  });
+
   // Current active worker name helper
   const currentStaffUser = staff.find((s) => s.id === activeStaffId) || {
     name: "System Operator",
@@ -355,6 +382,14 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     localStorage.setItem("hms_audits", JSON.stringify(auditLogs));
   }, [auditLogs]);
+
+  useEffect(() => {
+    localStorage.setItem("hms_printers", JSON.stringify(printers));
+  }, [printers]);
+
+  useEffect(() => {
+    localStorage.setItem("hms_prepayments", JSON.stringify(prepayments));
+  }, [prepayments]);
 
 
   // Helper Log Writer
@@ -427,22 +462,59 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setReservations((prev) =>
       prev.map((res) => {
         if (res.id === id) {
-          addAuditLog("RESERVATION", `Booking status updated for ${id} to ${status}`);
-          
-          // Sync Room Status as well
-          if (status === ReservationStatus.Cancelled) {
-            setRooms((roomsPrev) =>
-              roomsPrev.map((rm) => {
-                if (rm.number === res.roomNumber && rm.status === RoomStatus.Occupied) {
-                  return { ...rm, status: RoomStatus.Cleaning, currentGuestName: undefined };
-                }
-                return rm;
-              })
-            );
-          }
           return { ...res, status };
         }
         return res;
+      })
+    );
+
+    const res = reservations.find((r) => r.id === id);
+    if (res) {
+      addAuditLog("RESERVATION", `Booking status updated for ${id} to ${status}`);
+      
+      // Sync Room Status as well
+      if (status === ReservationStatus.Cancelled) {
+        setRooms((roomsPrev) =>
+          roomsPrev.map((rm) => {
+            if (rm.number === res.roomNumber && rm.status === RoomStatus.Occupied) {
+              return { ...rm, status: RoomStatus.Cleaning, currentGuestName: undefined };
+            }
+            return rm;
+          })
+        );
+      }
+    }
+  };
+
+  const rescheduleReservation = (id: string, checkInDate: string, checkOutDate: string, roomNumber: string, totalAmount: number) => {
+    setReservations((prev) =>
+      prev.map((res) => {
+        if (res.id === id) {
+          return { ...res, checkInDate, checkOutDate, roomNumber, totalAmount };
+        }
+        return res;
+      })
+    );
+
+    addAuditLog(
+      "RESERVATION",
+      `Rescheduled booking ${id} to ${checkInDate} -> ${checkOutDate} in room ${roomNumber} (New cost: $${totalAmount})`
+    );
+
+    // Also update matching unpaid Invoice if any
+    setInvoices((prev) =>
+      prev.map((inv) => {
+        if (inv.reservationId === id && inv.status === InvoiceStatus.Unpaid) {
+          const newTax = Math.round(totalAmount * (hotelProfile.taxRate / 100) * 100) / 100;
+          const newTotal = Math.round(totalAmount * (1 + (hotelProfile.taxRate + hotelProfile.serviceChargeRate) / 100) * 100) / 100;
+          return {
+            ...inv,
+            roomCharges: totalAmount,
+            taxes: newTax,
+            total: newTotal
+          };
+        }
+        return inv;
       })
     );
   };
@@ -452,7 +524,6 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setReservations((prev) =>
       prev.map((res) => {
         if (res.id === id) {
-          // Update details
           return { ...res, status: ReservationStatus.CheckedIn, roomNumber };
         }
         return res;
@@ -493,6 +564,43 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     addAuditLog("CHECK-IN", `Guest ${guestName} checked in to Room ${roomNumber} - ID verified (${idType})`);
+
+    // 4. Auto apply prepayment linked to this reservation if any
+    const matchPreps = prepayments.filter((p) => p.reservationId === id);
+    const totalPrep = matchPreps.reduce((s, p) => s + p.amount, 0);
+    if (totalPrep > 0) {
+      setInvoices((prevInv) =>
+        prevInv.map((inv) => {
+          if (inv.reservationId === id) {
+            const prepPayment: Payment = {
+              id: "p_prep_" + Date.now() + "_" + Math.floor(Math.random() * 100),
+              date: new Date().toISOString().split("T")[0],
+              amount: totalPrep,
+              method: PaymentMethod.CreditCard,
+              currency: "USD",
+              transactionId: "TXN-PREP-" + id
+            };
+            const updatedPayments = [...inv.payments, prepPayment];
+            const paidSum = updatedPayments.reduce((s, p) => s + p.amount, 0);
+            const status = paidSum >= inv.total ? InvoiceStatus.Paid : InvoiceStatus.Partial;
+            return { ...inv, payments: updatedPayments, status };
+          }
+          return inv;
+        })
+      );
+
+      setGuests((prevG) =>
+        prevG.map((g) => {
+          if (g.id === guestId) {
+            const currentP = g.prepaymentBalance || 0;
+            return { ...g, prepaymentBalance: Math.max(0, currentP - totalPrep) };
+          }
+          return g;
+        })
+      );
+
+      addAuditLog("FINANCE", `Applied Prepayment of $${totalPrep} USD to Invoice for Res ID: #${id}`);
+    }
   };
 
   const checkOutReservation = (id: string, method: PaymentMethod, currencyCode: string) => {
@@ -519,67 +627,99 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
     );
 
-    // 3. Close the Invoice by fully paying remaining balance
+    // Fetch guest profile credit balance
+    const targetGuest = guests.find((g) => g.id === reservation.guestId);
+    const availableCredit = targetGuest?.creditBalance || 0;
+
+    // 3. Close the Invoice by paying remaining balance
+    let creditUsed = 0;
+    let remainingUSD = 0;
+    const paymentsToAppend: Payment[] = [];
+
     setInvoices((prev) =>
       prev.map((inv) => {
         if (inv.reservationId === id) {
           const totalPaidBefore = inv.payments.reduce((acc, p) => acc + p.amount, 0);
-          const remainingUSD = Math.max(0, inv.total - totalPaidBefore);
+          remainingUSD = Math.max(0, inv.total - totalPaidBefore);
+
+          if (remainingUSD > 0 && availableCredit > 0) {
+            creditUsed = Math.min(remainingUSD, availableCredit);
+            remainingUSD -= creditUsed;
+
+            paymentsToAppend.push({
+              id: "p_credit_" + Date.now() + "_" + Math.floor(Math.random() * 100),
+              date: new Date().toISOString().split("T")[0],
+              amount: creditUsed,
+              method: PaymentMethod.CreditCard,
+              currency: "USD",
+              transactionId: "TXN-CREDIT-APPLIED-" + id
+            });
+          }
 
           if (remainingUSD > 0) {
-            const currentCurrency = hotelProfile.currencies.find((c) => c.code === currencyCode) || hotelProfile.currencies[0];
-            const localAmount = remainingUSD * currentCurrency.rateToUSD;
-
-            const newPayment: Payment = {
+            paymentsToAppend.push({
               id: "p_" + Date.now() + "_" + Math.floor(Math.random() * 100),
               date: new Date().toISOString().split("T")[0],
               amount: remainingUSD,
               method,
               currency: currencyCode,
               transactionId: "TXN-" + Math.floor(Math.random() * 100000000)
-            };
-
-            // Update Guest Total Spend
-            setGuests((guestPrev) =>
-              guestPrev.map((g) => {
-                if (g.id === reservation.guestId) {
-                  const spendDiff = remainingUSD;
-                  const newSpend = g.totalSpend + spendDiff;
-                  // Handle Tier Promo
-                  let newTier = g.loyaltyTier;
-                  if (newSpend >= 10000) newTier = LoyaltyTier.Platinum;
-                  else if (newSpend >= 3000) newTier = LoyaltyTier.Gold;
-                  else if (newSpend >= 1000) newTier = LoyaltyTier.Silver;
-
-                  return { ...g, totalSpend: newSpend, loyaltyTier: newTier };
-                }
-                return g;
-              })
-            );
-
-            return {
-              ...inv,
-              status: InvoiceStatus.Paid,
-              currencyCode,
-              payments: [...inv.payments, newPayment]
-            };
+            });
           }
-          return { ...inv, status: InvoiceStatus.Paid };
+
+          return {
+            ...inv,
+            status: InvoiceStatus.Paid,
+            currencyCode,
+            payments: [...inv.payments, ...paymentsToAppend]
+          };
         }
         return inv;
       })
     );
 
+    // Update Guest Total Spend & Credit Balances (Moved outside of setInvoices)
+    setGuests((guestPrev) =>
+      guestPrev.map((g) => {
+        if (g.id === reservation.guestId) {
+          const updatedCredit = Math.max(0, (g.creditBalance || 0) - creditUsed);
+          
+          // Re-calculate standard spend change
+          const spendDiff = remainingUSD + creditUsed;
+          const newSpend = g.totalSpend + spendDiff;
+          
+          let newTier = g.loyaltyTier;
+          if (newSpend >= 10000) newTier = LoyaltyTier.Platinum;
+          else if (newSpend >= 3000) newTier = LoyaltyTier.Gold;
+          else if (newSpend >= 1000) newTier = LoyaltyTier.Silver;
+
+          return {
+            ...g,
+            totalSpend: newSpend,
+            loyaltyTier: newTier,
+            creditBalance: updatedCredit
+          };
+        }
+        return g;
+      })
+    );
+
+    if (creditUsed > 0) {
+      addAuditLog("FINANCE", `Applied guest credit balance of $${creditUsed} USD to Invoice ${id}`);
+    }
+
     addAuditLog("CHECK-OUT", `Guest ${reservation.guestName} checked out of Room ${reservation.roomNumber}. Paid with ${method}`);
   };
 
   const updateRoomStatus = (id: string, status: RoomStatus) => {
+    const rm = rooms.find((r) => r.id === id);
+    if (rm) {
+      addAuditLog("ROOM", `Room ${rm.number} status modified from ${rm.status} to ${status}`);
+    }
+
     setRooms((prev) =>
       prev.map((rm) => {
         if (rm.id === id) {
-          const details = `Room ${rm.number} status modified from ${rm.status} to ${status}`;
-          addAuditLog("ROOM", details);
-          
           return {
             ...rm,
             status,
@@ -592,11 +732,15 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateRoomHousekeeper = (id: string, housekeeperId: string | undefined) => {
+    const rm = rooms.find((r) => r.id === id);
+    if (rm) {
+      const hkName = housekeeperId ? staff.find((s) => s.id === housekeeperId)?.name : "None";
+      addAuditLog("HOUSEKEEPING", `Assigned Room ${rm.number} to cleaning team member: ${hkName}`);
+    }
+
     setRooms((prev) =>
       prev.map((rm) => {
         if (rm.id === id) {
-          const hkName = housekeeperId ? staff.find((s) => s.id === housekeeperId)?.name : "None";
-          addAuditLog("HOUSEKEEPING", `Assigned Room ${rm.number} to cleaning team member: ${hkName}`);
           return { ...rm, housekeeperId };
         }
         return rm;
@@ -605,13 +749,17 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateRoomPricing = (id: string, baseRate: number, dynamicModifier: number) => {
+    const rm = rooms.find((r) => r.id === id);
+    if (rm) {
+      addAuditLog(
+        "PRICING",
+        `Room ${rm.number} pricing updated - Base: $${baseRate}, Peak Modifier: ${dynamicModifier}x`
+      );
+    }
+
     setRooms((prev) =>
       prev.map((rm) => {
         if (rm.id === id) {
-          addAuditLog(
-            "PRICING",
-            `Room ${rm.number} pricing updated - Base: $${baseRate}, Peak Modifier: ${dynamicModifier}x`
-          );
           return { ...rm, baseRate, dynamicModifier };
         }
         return rm;
@@ -633,10 +781,14 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateGuestProfile = (id: string, updates: Partial<Guest>) => {
+    const g = guests.find((x) => x.id === id);
+    if (g) {
+      addAuditLog("CRM", `Guest profile updated for ${g.firstName} ${g.lastName}`);
+    }
+
     setGuests((prev) =>
       prev.map((g) => {
         if (g.id === id) {
-          addAuditLog("CRM", `Guest profile updated for ${g.firstName} ${g.lastName}`);
           return { ...g, ...updates };
         }
         return g;
@@ -645,22 +797,21 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addPaymentToInvoice = (invoiceId: string, amount: number, method: PaymentMethod, currency: string) => {
+    const selectedCurrency = hotelProfile.currencies.find((c) => c.code === currency) || hotelProfile.currencies[0];
+    const amountInUSD = amount / selectedCurrency.rateToUSD;
+
+    const newPayment: Payment = {
+      id: "p_" + Date.now() + "_" + Math.floor(Math.random() * 100),
+      date: new Date().toISOString().split("T")[0],
+      amount: amountInUSD,
+      method,
+      currency,
+      transactionId: "TXN-" + Math.floor(Math.random() * 100000000)
+    };
+
     setInvoices((prev) =>
       prev.map((inv) => {
         if (inv.id === invoiceId) {
-          const selectedCurrency = hotelProfile.currencies.find((c) => c.code === currency) || hotelProfile.currencies[0];
-          // Convert amount in chosen currency back to USD for core record-keeping
-          const amountInUSD = amount / selectedCurrency.rateToUSD;
-
-          const newPayment: Payment = {
-            id: "p_" + Date.now() + "_" + Math.floor(Math.random() * 100),
-            date: new Date().toISOString().split("T")[0],
-            amount: amountInUSD,
-            method,
-            currency,
-            transactionId: "TXN-" + Math.floor(Math.random() * 100000000)
-          };
-
           const newPaymentsList = [...inv.payments, newPayment];
           const totalPaid = newPaymentsList.reduce((acc, p) => acc + p.amount, 0);
 
@@ -668,30 +819,6 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (totalPaid >= inv.total - 0.05) {
             newStatus = InvoiceStatus.Paid;
           }
-
-          // Fetch Reservation to update Guest info
-          const res = reservations.find((r) => r.id === inv.reservationId);
-          if (res) {
-            setGuests((guestPrev) =>
-              guestPrev.map((g) => {
-                if (g.id === res.guestId) {
-                  const newSpend = g.totalSpend + amountInUSD;
-                  let newTier = g.loyaltyTier;
-                  if (newSpend >= 10000) newTier = LoyaltyTier.Platinum;
-                  else if (newSpend >= 3000) newTier = LoyaltyTier.Gold;
-                  else if (newSpend >= 1000) newTier = LoyaltyTier.Silver;
-
-                  return { ...g, totalSpend: newSpend, loyaltyTier: newTier };
-                }
-                return g;
-              })
-            );
-          }
-
-          addAuditLog(
-            "PAYMENT",
-            `Invoice ${invoiceId} received payment of ${selectedCurrency.symbol}${amount.toFixed(2)} using ${method}`
-          );
 
           return {
             ...inv,
@@ -701,6 +828,33 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return inv;
       })
+    );
+
+    const inv = invoices.find((i) => i.id === invoiceId);
+    if (inv) {
+      // Fetch Reservation to update Guest info
+      const res = reservations.find((r) => r.id === inv.reservationId);
+      if (res) {
+        setGuests((guestPrev) =>
+          guestPrev.map((g) => {
+            if (g.id === res.guestId) {
+              const newSpend = g.totalSpend + amountInUSD;
+              let newTier = g.loyaltyTier;
+              if (newSpend >= 10000) newTier = LoyaltyTier.Platinum;
+              else if (newSpend >= 3000) newTier = LoyaltyTier.Gold;
+              else if (newSpend >= 1000) newTier = LoyaltyTier.Silver;
+
+              return { ...g, totalSpend: newSpend, loyaltyTier: newTier };
+            }
+            return g;
+          })
+        );
+      }
+    }
+
+    addAuditLog(
+      "PAYMENT",
+      `Invoice ${invoiceId} received payment of ${selectedCurrency.symbol}${amount.toFixed(2)} using ${method}`
     );
   };
 
@@ -742,10 +896,11 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateServiceBookingStatus = (id: string, status: "Pending" | "Completed" | "Cancelled") => {
+    addAuditLog("SERVICES", `Activity order ${id} status altered to: ${status}`);
+
     setServiceBookings((prev) =>
       prev.map((sb) => {
         if (sb.id === id) {
-          addAuditLog("SERVICES", `Activity order ${id} status altered to: ${status}`);
           return { ...sb, status };
         }
         return sb;
@@ -754,11 +909,15 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const restockInventory = (id: string, amount: number) => {
+    const item = inventory.find((i) => i.id === id);
+    if (item) {
+      addAuditLog("INVENTORY", `Restocked ${amount} units of ${item.name}. Supplier: ${item.supplier}`);
+    }
+
     setInventory((prev) =>
       prev.map((item) => {
         if (item.id === id) {
           const nextQty = item.qty + amount;
-          addAuditLog("INVENTORY", `Restocked ${amount} units of ${item.name}. Supplier: ${item.supplier}`);
           return {
             ...item,
             qty: nextQty,
@@ -771,11 +930,15 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const consumeInventory = (id: string, amount: number) => {
+    const item = inventory.find((i) => i.id === id);
+    if (item) {
+      addAuditLog("INVENTORY", `Deducted ${amount} units of ${item.name} from consumable stock`);
+    }
+
     setInventory((prev) =>
       prev.map((item) => {
         if (item.id === id) {
           const nextQty = Math.max(0, item.qty - amount);
-          addAuditLog("INVENTORY", `Deducted ${amount} units of ${item.name} from consumable stock`);
           return { ...item, qty: nextQty };
         }
         return item;
@@ -804,10 +967,14 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateStaffUserStatus = (id: string, status: "Active" | "Off-Duty" | "On-Leave") => {
+    const s = staff.find((x) => x.id === id);
+    if (s) {
+      addAuditLog("STAFF", `Updated staff status for ${s.name} to: ${status}`);
+    }
+
     setStaff((prev) =>
       prev.map((s) => {
         if (s.id === id) {
-          addAuditLog("STAFF", `Updated staff status for ${s.name} to: ${status}`);
           return { ...s, status };
         }
         return s;
@@ -833,6 +1000,81 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setShifts((prev) => prev.filter((sh) => sh.id !== id));
   };
 
+  const addPrinter = (printerData: Omit<PrinterConfig, "id">) => {
+    const generatedId = "prt_" + Date.now();
+    const newPrinter: PrinterConfig = {
+      ...printerData,
+      id: generatedId
+    };
+    setPrinters((prev) => [...prev, newPrinter]);
+    addAuditLog("SETTINGS", `Configured new printer queue: ${printerData.name} (${printerData.type}) at ${printerData.location}`);
+  };
+
+  const updatePrinter = (id: string, updates: Partial<PrinterConfig>) => {
+    const p = printers.find((x) => x.id === id);
+    if (p) {
+      addAuditLog("SETTINGS", `Updated printer config for: ${p.name}`);
+    }
+
+    setPrinters((prev) =>
+      prev.map((p) => {
+        if (p.id === id) {
+          return { ...p, ...updates };
+        }
+        return p;
+      })
+    );
+  };
+
+  const deletePrinter = (id: string) => {
+    const target = printers.find((p) => p.id === id);
+    if (target) {
+      addAuditLog("SETTINGS", `Decommissioned printer queue: ${target.name}`);
+    }
+    setPrinters((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  const recordPrepayment = (prepData: Omit<Prepayment, "id" | "date">) => {
+    const generatedId = "prep_" + Date.now();
+    const newPrep: Prepayment = {
+      ...prepData,
+      id: generatedId,
+      date: new Date().toISOString().split("T")[0]
+    };
+    setPrepayments((prev) => [...prev, newPrep]);
+
+    // Also increment guest prepaymentBalance
+    setGuests((prev) =>
+      prev.map((g) => {
+        if (g.id === prepData.guestId) {
+          const currentBal = g.prepaymentBalance || 0;
+          return { ...g, prepaymentBalance: currentBal + prepData.amount };
+        }
+        return g;
+      })
+    );
+
+    addAuditLog("FINANCE", `Recorded prepayment of $${prepData.amount} USD for reservation ID #${prepData.reservationId}`);
+  };
+
+  const adjustGuestCredit = (guestId: string, amount: number, notes: string) => {
+    const g = guests.find((x) => x.id === guestId);
+    if (g) {
+      addAuditLog("FINANCE", `Adjusted credit balance for ${g.firstName} ${g.lastName} by $${amount} USD (${notes})`);
+    }
+
+    setGuests((prev) =>
+      prev.map((g) => {
+        if (g.id === guestId) {
+          const currentBal = g.creditBalance || 0;
+          const nextBal = Math.max(0, currentBal + amount);
+          return { ...g, creditBalance: nextBal };
+        }
+        return g;
+      })
+    );
+  };
+
   const clearAllData = () => {
     localStorage.removeItem("hms_rooms");
     localStorage.removeItem("hms_reservations");
@@ -846,7 +1088,9 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.removeItem("hms_shifts");
     localStorage.removeItem("hms_audits");
     localStorage.removeItem("hms_profile");
-
+    localStorage.removeItem("hms_printers");
+    localStorage.removeItem("hms_prepayments");
+ 
     setRooms(INITIAL_ROOMS);
     setReservations(INITIAL_RESERVATIONS);
     setGuests(INITIAL_GUESTS);
@@ -859,7 +1103,9 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setShifts(INITIAL_SHIFTS);
     setAuditLogs(INITIAL_AUDITS);
     setHotelProfile(DEFAULT_PROFILE);
-
+    setPrinters(INITIAL_PRINTERS);
+    setPrepayments([]);
+ 
     addAuditLog("SYSTEM", "All databases formatted and restored to system factory settings template");
   };
 
@@ -885,10 +1131,13 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         staff,
         shifts,
         auditLogs,
+        printers,
+        prepayments,
 
         updateHotelProfile,
         createReservation,
         updateReservationStatus,
+        rescheduleReservation,
         checkInReservation,
         checkOutReservation,
         updateRoomStatus,
@@ -906,6 +1155,11 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateStaffUserStatus,
         addShift,
         deleteShift,
+        addPrinter,
+        updatePrinter,
+        deletePrinter,
+        recordPrepayment,
+        adjustGuestCredit,
         addAuditLog,
         clearAllData
       }}

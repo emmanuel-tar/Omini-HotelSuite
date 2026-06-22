@@ -5,7 +5,8 @@
 
 import React, { useState, useEffect } from "react";
 import { useHMS } from "../context/HMSContext";
-import { StaffRole, StaffUser } from "../types";
+import { WebUsbHidPrinterBridge } from "./WebUsbHidPrinterBridge";
+import { StaffRole, StaffUser, PrinterConfig } from "../types";
 import {
   Settings,
   Building2,
@@ -34,19 +35,12 @@ import {
   Smartphone,
   ShieldCheck,
   Wifi,
-  DollarSign
+  DollarSign,
+  Search,
+  Laptop,
+  Sparkles,
+  Check
 } from "lucide-react";
-
-// Structure for Saved Printers
-interface PrinterConfig {
-  id: string;
-  name: string;
-  type: "Thermal Roll 58mm" | "Thermal Roll 80mm" | "Office LaserJet A4" | "Dot Matrix KOT";
-  connection: "Wi-Fi Network" | "USB Local Cable" | "Bluetooth" | "Ethernet LAN";
-  ip: string;
-  assignedRole: "All Receipts" | "Bill Invoices" | "Kitchen Orders" | "Accounting Reports" | "Front Desk Ledger";
-  status: "Online" | "Offline" | "In Use";
-}
 
 // Structure for Permissions Item
 interface RolePermission {
@@ -70,7 +64,11 @@ export const SettingsModule: React.FC = () => {
     addAuditLog,
     staff,
     addStaffUser,
-    updateStaffUserStatus
+    updateStaffUserStatus,
+    printers,
+    addPrinter,
+    updatePrinter,
+    deletePrinter
   } = useHMS();
 
   // Active Sub Tab
@@ -126,27 +124,21 @@ export const SettingsModule: React.FC = () => {
     localStorage.setItem("hms_role_permissions", JSON.stringify(updated));
   };
 
-  // 3. Printer Ecosystem State
-  const [printers, setPrinters] = useState<PrinterConfig[]>(() => {
-    const saved = localStorage.getItem("hms_network_printers");
-    if (saved) return JSON.parse(saved);
-    return [
-      { id: "pr-1", name: "Front Desk Receipt Thermal", type: "Thermal Roll 80mm", connection: "Wi-Fi Network", ip: "192.168.1.101", assignedRole: "All Receipts", status: "Online" },
-      { id: "pr-2", name: "F&B Bar POS Slip Thermal", type: "Thermal Roll 58mm", connection: "Bluetooth", ip: "BT:BarSlip_FD", assignedRole: "Kitchen Orders", status: "Online" },
-      { id: "pr-3", name: "Accounting Ledger Laser A4", type: "Office LaserJet A4", connection: "Ethernet LAN", ip: "192.168.1.144", assignedRole: "Accounting Reports", status: "Online" }
-    ];
-  });
+  // 3. Printer Ecosystem Windows Auto-Discovery Scan State
+  const [windowsScanStatus, setWindowsScanStatus] = useState<"idle" | "scanning" | "found">("idle");
+  const [scanLogs, setScanLogs] = useState<string[]>([]);
+  const [discoveredPrinters, setDiscoveredPrinters] = useState<any[]>([]);
 
   // Printer addition variables
   const [newPrName, setNewPrName] = useState("");
-  const [newPrType, setNewPrType] = useState<PrinterConfig["type"]>("Thermal Roll 80mm");
-  const [newPrConn, setNewPrConn] = useState<PrinterConfig["connection"]>("Wi-Fi Network");
+  const [newPrType, setNewPrType] = useState<string>("Thermal Roll 80mm");
+  const [newPrConn, setNewPrConn] = useState<string>("Wi-Fi Network");
   const [newPrIp, setNewPrIp] = useState("192.168.1.");
-  const [newPrRole, setNewPrRole] = useState<PrinterConfig["assignedRole"]>("All Receipts");
+  const [newPrRole, setNewPrRole] = useState<string>("All Receipts");
 
   // Default bindings state
-  const [defInvoicePr, setDefInvoicePr] = useState("pr-3");
-  const [defReceiptPr, setDefReceiptPr] = useState("pr-1");
+  const [defInvoicePr, setDefInvoicePr] = useState("prt_2");
+  const [defReceiptPr, setDefReceiptPr] = useState("prt_1");
   const [defReportPr, setDefReportPr] = useState("pr-3");
 
   // Test Print simulation state
@@ -174,10 +166,10 @@ export const SettingsModule: React.FC = () => {
   const [sysStripeSecretKey, setSysStripeSecretKey] = useState("••••••••••••••••••••••••");
   const [sysIsSandboxMode, setSysIsSandboxMode] = useState(true);
 
-  // Persists setup configs helper
+  // Persists setup configs helper is completely delegated to global HMSContext.
   useEffect(() => {
-    localStorage.setItem("hms_network_printers", JSON.stringify(printers));
-  }, [printers]);
+    // No-op. Single source of printers truth is HMSContext.
+  }, []);
 
   // Submit Corporate Profile edits
   const handleProfileSubmit = (e: React.FormEvent) => {
@@ -231,25 +223,88 @@ export const SettingsModule: React.FC = () => {
     e.preventDefault();
     if (!newPrName) return;
 
-    const newPrinter: PrinterConfig = {
-      id: "pr-" + Date.now(),
+    addPrinter({
       name: newPrName,
+      location: newPrRole === "Kitchen Orders" ? "Restaurant" : (newPrRole === "Accounting Reports" ? "Accounting" : "Front Desk"),
       type: newPrType,
+      isDefault: false,
+      status: "Online",
       connection: newPrConn,
       ip: newPrIp,
-      assignedRole: newPrRole,
-      status: "Online"
-    };
+      assignedRole: newPrRole
+    });
 
-    setPrinters(prev => [...prev, newPrinter]);
     addAuditLog("PRINTER", `Registered new branch network printer: ${newPrName} at ${newPrIp}`);
     setNewPrName("");
     setNewPrIp("192.168.1.");
   };
 
   const handleDeletePrinter = (id: string, name: string) => {
-    setPrinters(prev => prev.filter(p => p.id !== id));
+    deletePrinter(id);
     addAuditLog("PRINTER", `Removed network printer interface wrapper: ${name}`);
+  };
+
+  // Windows Spooler and Driver Scanner Simulated Function
+  const handleScanWindowsPrinters = () => {
+    setWindowsScanStatus("scanning");
+    setScanLogs([
+      "🔋 [SPOOLSV] Initializing connection to Windows Print Spooler (spoolsv.exe)...",
+      "🛰️ [DRIVER] Loading client side Win32 drivers dynamic wrapper...",
+    ]);
+    setDiscoveredPrinters([]);
+
+    setTimeout(() => {
+      setScanLogs(prev => [...prev, "🔍 [SPOOLSV] Enumerating active print spoolers (PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS)..."]);
+      setTimeout(() => {
+        setScanLogs(prev => [...prev, "📄 [SPOOLSV] Reading drivers registry: Software\\Microsoft\\Windows NT\\CurrentVersion\\Print\\Printers..."]);
+        setTimeout(() => {
+          setScanLogs(prev => [...prev, "🔌 [DRIVER] Discovered 5 installed system printers with online/offline states."]);
+          setTimeout(() => {
+            const list = [
+              { name: "HP LaserJet Pro M402dn", type: "Laser", connection: "USB Local Cable", ip: "USB001 (Windows Spool)", status: "Online" as const, assignedRole: "Bill Invoices" },
+              { name: "Zebra GK420t Thermal Label", type: "Thermal", connection: "USB Local Cable", ip: "USB002 (Zebra Spool)", status: "Online" as const, assignedRole: "All Receipts" },
+              { name: "Microsoft Print to PDF", type: "Laser", connection: "Virtual Port", ip: "PORTPROMPT: (Virtual)", status: "Online" as const, assignedRole: "All Receipts" },
+              { name: "Canon TS3120 Series Inkjet", type: "Inkjet", connection: "Wi-Fi Network", ip: "192.168.1.188 (Local WLAN)", status: "Offline" as const, assignedRole: "Accounting Reports" },
+              { name: "Epson LX-310 Dot Matrix", type: "Dot Matrix KOT", connection: "USB Local Cable", ip: "LPT1: (Parallel-USB)", status: "Offline" as const, assignedRole: "Kitchen Orders" }
+            ];
+            setDiscoveredPrinters(list);
+            setWindowsScanStatus("found");
+            setScanLogs(prev => [...prev, "🏁 [SPOOLSV] Scan complete! Selected printers are ready for local/attached routing association."]);
+            addAuditLog("PRINTER", "Executed auto-discovery scan on client Windows Print Spool Host. 5 drivers identified.");
+          }, 600);
+        }, 605);
+      }, 610);
+    }, 615);
+  };
+
+  const handleAttachDiscoveredPrinter = (dp: any) => {
+    addPrinter({
+      name: dp.name,
+      location: dp.assignedRole === "Kitchen Orders" ? "Restaurant" : (dp.assignedRole === "Accounting Reports" ? "Accounting" : "Front Desk"),
+      type: dp.type,
+      isDefault: false,
+      status: dp.status,
+      connection: dp.connection,
+      ip: dp.ip,
+      assignedRole: dp.assignedRole
+    });
+    alert(`Attached Windows Printer: "${dp.name}" of status ${dp.status} successfully mapped to default queue!`);
+  };
+
+  const handleBulkAttachAllPrinters = () => {
+    discoveredPrinters.forEach(dp => {
+      addPrinter({
+        name: dp.name,
+        location: dp.assignedRole === "Kitchen Orders" ? "Restaurant" : (dp.assignedRole === "Accounting Reports" ? "Accounting" : "Front Desk"),
+        type: dp.type,
+        isDefault: false,
+        status: dp.status,
+        connection: dp.connection,
+        ip: dp.ip,
+        assignedRole: dp.assignedRole
+      });
+    });
+    alert("BULK COMPLETE: All 5 discovered Windows printers have been securely attached & default routing profiles updated.");
   };
 
   // Trigger simulated Test Print Job
@@ -946,7 +1001,8 @@ export const SettingsModule: React.FC = () => {
 
         {/* PANEL 3: PRINTER INFRASTRUCTURE SETUP */}
         {activeSubTab === "printers" && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fade-in-up" id="printers-setup-tab-panel">
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fade-in-up" id="printers-setup-tab-panel">
             
             {/* Left Column: Register New Printer Device */}
             <div className="space-y-5 lg:col-span-1">
@@ -1036,6 +1092,106 @@ export const SettingsModule: React.FC = () => {
                   Plug &amp; Connect Printer Profile
                 </button>
               </form>
+
+              {/* Windows OS Printer Scanner & Auto-Discovery Bridge */}
+              <div className="bg-slate-900 text-white p-5 rounded-xl border border-slate-800 shadow-sm space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                  <h4 className="font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 text-indigo-400">
+                    <Laptop className="w-4 h-4 text-indigo-400" />
+                    Windows Spooler Bridge
+                  </h4>
+                  <span className="text-[9px] bg-slate-850 text-indigo-300 font-mono font-bold px-1.5 py-0.2 rounded border border-indigo-900/60 uppercase">
+                    WIN32_PRINTER
+                  </span>
+                </div>
+
+                <p className="text-[10.5px] text-slate-300 leading-relaxed font-normal">
+                  Scans Windows PC active printing services (via local spool bridge) to discover online and offline drivers connected and attach them to OmniSuite.
+                </p>
+
+                {windowsScanStatus === "idle" && (
+                  <button
+                    type="button"
+                    onClick={handleScanWindowsPrinters}
+                    className="w-full bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-4 py-2.5 text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm hover:scale-[1.01]"
+                  >
+                    <Search className="w-3.5 h-3.5" />
+                    Scan Windows Installed Printers
+                  </button>
+                )}
+
+                {windowsScanStatus === "scanning" && (
+                  <div className="space-y-3 p-3 bg-slate-950 rounded-lg border border-slate-800 font-mono text-[10px] text-slate-300">
+                    <div className="flex items-center gap-2 text-indigo-400 font-bold animate-pulse">
+                      <span className="w-2.5 h-2.5 rounded-full bg-indigo-400 animate-ping"></span>
+                      <span>SPOOLER INQUIRY RUNNING...</span>
+                    </div>
+                    <div className="space-y-1 max-h-32 overflow-y-auto scrollbar-thin text-stone-400">
+                      {scanLogs.map((log, idx) => (
+                        <p key={idx} className="leading-tight">{log}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {windowsScanStatus === "found" && (
+                  <div className="space-y-3">
+                    <div className="p-3 bg-emerald-950/60 border border-emerald-900/50 rounded-lg text-xs space-y-1.5">
+                      <div className="flex items-center gap-1.5 text-emerald-400 font-bold">
+                        <CheckCircle className="w-4 h-4" />
+                        <span>Discovered {discoveredPrinters.length} System Printers</span>
+                      </div>
+                      <p className="text-[10px] text-slate-300 leading-normal">
+                        Select device to attach to OmniSuite or import them to register local hardware endpoints.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                      {discoveredPrinters.map((dp, i) => (
+                        <div key={i} className="p-2.5 bg-slate-950/80 border border-slate-850 rounded-lg flex items-center justify-between text-[11px] gap-2">
+                          <div className="space-y-1 truncate">
+                            <div className="font-bold text-slate-100 flex items-center gap-1.5 leading-tight truncate">
+                              <span className={`w-1.5 h-1.5 rounded-full ${dp.status === "Online" ? "bg-emerald-500" : "bg-red-505"}`}></span>
+                              {dp.name}
+                            </div>
+                            <div className="text-[9.5px] text-slate-400 font-mono tracking-tight flex flex-wrap gap-x-2">
+                              <span>Port: {dp.ip.split(" ")[0]}</span>
+                              <span>&bull;</span>
+                              <span>{dp.connection}</span>
+                            </div>
+                          </div>
+                          
+                          <button
+                            type="button"
+                            onClick={() => handleAttachDiscoveredPrinter(dp)}
+                            className="bg-indigo-600 hover:bg-slate-800 text-white border border-indigo-500/30 text-[9.5px] font-black uppercase px-2 py-1 rounded cursor-pointer shrink-0 transition"
+                          >
+                            Attach
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={handleScanWindowsPrinters}
+                        className="bg-transparent hover:bg-slate-800 border border-slate-700 text-slate-300 font-bold px-2 py-2 rounded-lg text-[10.5px] transition text-center cursor-pointer"
+                      >
+                        Rescan OS
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleBulkAttachAllPrinters}
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-2 py-2 rounded-lg text-[10.5px] transition text-center cursor-pointer flex items-center justify-center gap-1"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        Bulk Attach All
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Right Column: Manage Mounted Printers & Defaults */}
@@ -1119,10 +1275,10 @@ export const SettingsModule: React.FC = () => {
                           <h5 className="font-extrabold text-slate-800 text-xs tracking-tight">{p.name}</h5>
                           
                           <div className="text-[10.5px] text-slate-500 font-mono space-y-0.5">
-                            <p className="flex items-center gap-1"><Network className="w-3 h-3 text-slate-400" /> Interface: {p.connection}</p>
-                            <p className="flex items-center gap-1"><Wifi className="w-3 h-3 text-slate-400" /> Endpoint IP: {p.ip}</p>
-                            <p className="font-bold text-slate-650 mt-1 uppercase tracking-wider text-[9px] bg-slate-100 p-1 rounded inline-block">
-                              Target task: {p.assignedRole}
+                            <p className="flex items-center gap-1"><Network className="w-3 h-3 text-slate-400" /> Interface: {p.connection || "Local USB Hub"}</p>
+                            <p className="flex items-center gap-1"><Wifi className="w-3 h-3 text-slate-400" /> Endpoint IP: {p.ip || "127.0.0.1 (OS Shared)"}</p>
+                            <p className="font-bold text-slate-650 mt-1 uppercase tracking-wider text-[9px] bg-slate-100 p-1 rounded inline-block font-sans">
+                              Target task: {p.assignedRole || (p.isDefault ? "All Receipts" : "Staff Report Output")}
                             </p>
                           </div>
                         </div>
@@ -1166,7 +1322,11 @@ export const SettingsModule: React.FC = () => {
               </div>
             </div>
           </div>
-        )}
+          
+          {/* Direct USB & HID Hardware Discovery Port Bridge */}
+          <WebUsbHidPrinterBridge />
+        </div>
+      )}
 
         {/* PANEL 4: DOCUMENT & RECEIPT DESIGNER */}
         {activeSubTab === "docs" && (

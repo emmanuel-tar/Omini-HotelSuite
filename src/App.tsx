@@ -19,6 +19,7 @@ import { InventoryModule } from "./components/InventoryModule";
 import { StaffModule } from "./components/StaffModule";
 import { ReportsModule } from "./components/ReportsModule";
 import { SettingsModule } from "./components/SettingsModule";
+import { OmniSearchInspector } from "./components/OmniSearchInspector";
 
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -39,7 +40,9 @@ import {
   LogOut,
   User,
   ShieldAlert,
-  ArrowRight
+  ArrowRight,
+  Search,
+  X
 } from "lucide-react";
 
 const MainHMSWorkspace: React.FC = () => {
@@ -54,9 +57,47 @@ const MainHMSWorkspace: React.FC = () => {
     rooms,
     reservations,
     inventory,
+    guests,
     setActiveRole,
     setActiveStaffId
   } = useHMS();
+
+  // Search Input and results interactive overlay states
+  const [globalQuery, setGlobalQuery] = useState("");
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [selectedEntity, setSelectedEntity] = useState<{
+    type: "guest" | "reservation" | "room";
+    id: string;
+  } | null>(null);
+
+  const query = globalQuery.trim().toLowerCase();
+
+  const matchedGuests = query
+    ? guests.filter((g) =>
+        `${g.firstName} ${g.lastName}`.toLowerCase().includes(query) ||
+        g.email.toLowerCase().includes(query) ||
+        g.phone.includes(query) ||
+        g.id.toLowerCase().includes(query)
+      )
+    : [];
+
+  const matchedReservations = query
+    ? reservations.filter((r) =>
+        r.id.toLowerCase().includes(query) ||
+        r.guestName.toLowerCase().includes(query) ||
+        r.roomNumber.includes(query) ||
+        (r.notes && r.notes.toLowerCase().includes(query))
+      )
+    : [];
+
+  const matchedRooms = query
+    ? rooms.filter((r) =>
+        r.number.includes(query) ||
+        r.type.toLowerCase().includes(query) ||
+        r.status.toLowerCase().includes(query) ||
+        r.features.some((f) => f.toLowerCase().includes(query))
+      )
+    : [];
 
   // Active Branch details mapping
   const branchObj = hotelProfile.branches.find((b) => b.id === activeBranchId) || hotelProfile.branches[0];
@@ -131,6 +172,152 @@ const MainHMSWorkspace: React.FC = () => {
             </div>
             <p className="text-[10px] text-slate-450 leading-none mt-0.5">{branchObj.address}, {branchObj.city}</p>
           </div>
+        </div>
+
+        {/* Global OmniSearch Input field */}
+        <div className="flex-grow max-w-[280px] xl:max-w-md mx-6 relative" id="header-global-search-container">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input
+              type="text"
+              className="w-full text-2xs bg-slate-50 hover:bg-slate-100 focus:bg-white border border-slate-200 focus:border-indigo-505 rounded-xl pl-9 pr-8 py-2 focus:outline-hidden transition-all text-slate-850 placeholder:text-slate-400 font-medium"
+              placeholder="Search guest, room or reservation ID..."
+              value={globalQuery}
+              onChange={(e) => setGlobalQuery(e.target.value)}
+              onFocus={() => setIsSearchFocused(true)}
+              onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
+              id="header-global-search-input"
+            />
+            {globalQuery && (
+              <button
+                type="button"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                onMouseDown={() => setGlobalQuery("")}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Floater search results */}
+          {isSearchFocused && globalQuery && (
+            <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 max-h-96 overflow-y-auto p-2 space-y-3">
+              {matchedReservations.length === 0 && matchedGuests.length === 0 && matchedRooms.length === 0 ? (
+                <div className="text-center py-6 text-slate-400 text-xs">
+                  No matches found for &ldquo;<span className="text-slate-600 font-semibold">{globalQuery}</span>&rdquo;
+                </div>
+              ) : (
+                <>
+                  {/* RESERVATIONS SECTION */}
+                  {matchedReservations.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-[9px] font-black uppercase tracking-wider text-slate-400 px-2 py-1 flex items-center justify-between">
+                        <span>Reservations ({matchedReservations.length})</span>
+                        <CalendarDays className="w-3 h-3 text-slate-400" />
+                      </div>
+                      <div className="space-y-0.5">
+                        {matchedReservations.map((res) => (
+                          <button
+                            key={res.id}
+                            type="button"
+                            onMouseDown={() => {
+                              setSelectedEntity({ type: "reservation", id: res.id });
+                              setIsSearchFocused(false);
+                            }}
+                            className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-slate-50 transition flex items-center justify-between text-xs cursor-pointer"
+                          >
+                            <div className="truncate">
+                              <span className="font-extrabold text-slate-805 block truncate">{res.guestName}</span>
+                              <span className="text-[10px] text-slate-400 block font-mono">
+                                #{res.id} &bull; Room {res.roomNumber} ({res.roomType})
+                              </span>
+                            </div>
+                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase shrink-0 ${
+                              res.status === "Confirmed" ? "bg-indigo-50 text-indigo-700" :
+                              res.status === "CheckedIn" ? "bg-amber-50 text-amber-850" :
+                              res.status === "CheckedOut" ? "bg-emerald-50 text-emerald-800" : "bg-slate-100 text-slate-500"
+                            }`}>
+                              {res.status}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* GUESTS SECTION */}
+                  {matchedGuests.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-[9px] font-black uppercase tracking-wider text-slate-400 px-2 py-1 flex items-center justify-between">
+                        <span>Guests ({matchedGuests.length})</span>
+                        <User className="w-3 h-3 text-slate-400" />
+                      </div>
+                      <div className="space-y-0.5">
+                        {matchedGuests.map((gst) => (
+                          <button
+                            key={gst.id}
+                            type="button"
+                            onMouseDown={() => {
+                              setSelectedEntity({ type: "guest", id: gst.id });
+                              setIsSearchFocused(false);
+                            }}
+                            className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-slate-50 transition flex items-center justify-between text-xs cursor-pointer"
+                          >
+                            <div className="truncate">
+                              <span className="font-extrabold text-slate-850 block truncate">{gst.firstName} {gst.lastName}</span>
+                              <span className="text-[10px] text-slate-400 block truncate">
+                                {gst.email} &bull; {gst.phone}
+                              </span>
+                            </div>
+                            <span className="bg-indigo-55 text-indigo-700 border border-indigo-100 text-[9px] font-black px-1.5 py-0.2 rounded font-mono shrink-0">
+                              {gst.loyaltyTier}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ROOMS SECTION */}
+                  {matchedRooms.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-[9px] font-black uppercase tracking-wider text-slate-400 px-2 py-1 flex items-center justify-between">
+                        <span>Rooms ({matchedRooms.length})</span>
+                        <BedDouble className="w-3 h-3 text-slate-400" />
+                      </div>
+                      <div className="space-y-0.5">
+                        {matchedRooms.map((rm) => (
+                          <button
+                            key={rm.id}
+                            type="button"
+                            onMouseDown={() => {
+                              setSelectedEntity({ type: "room", id: rm.id });
+                              setIsSearchFocused(false);
+                            }}
+                            className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-slate-50 transition flex items-center justify-between text-xs cursor-pointer"
+                          >
+                            <div className="truncate">
+                              <span className="font-extrabold text-slate-805 block truncate">Room {rm.number} &mdash; {rm.type}</span>
+                              <span className="text-[10px] text-slate-400 block">
+                                Floor {rm.floor} &bull; ${rm.baseRate}/night
+                              </span>
+                            </div>
+                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase shrink-0 ${
+                              rm.status === "Available" ? "bg-emerald-50 text-emerald-800" :
+                              rm.status === "Occupied" ? "bg-amber-50 text-amber-800" :
+                              rm.status === "Cleaning" ? "bg-sky-50 text-sky-700" : "bg-red-50 text-red-700"
+                            }`}>
+                              {rm.status}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Dynamic tickers & user controls */}
@@ -252,6 +439,14 @@ const MainHMSWorkspace: React.FC = () => {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Global OmniSearch details inspection modal */}
+      {selectedEntity && (
+        <OmniSearchInspector
+          entity={selectedEntity}
+          onClose={() => setSelectedEntity(null)}
+        />
+      )}
     </div>
   );
 };
