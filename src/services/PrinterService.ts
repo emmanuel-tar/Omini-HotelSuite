@@ -305,6 +305,44 @@ export class PrinterService {
       diagnostic: `Simulated Spooled output: [${deviceType}] device mapped successfully. Dispatched hex packet size: ${bytePayload.length} bytes.`
     };
   }
+
+  /**
+   * Lists all connected and authorized physical printers.
+   */
+  public async listDevices(): Promise<PhysicalPrinter[]> {
+    return this.scanAuthorizedDevices();
+  }
+
+  /**
+   * Finds an authorized device by its product ID.
+   */
+  public async findDeviceByProductId(productId: string): Promise<PhysicalPrinter | undefined> {
+    const devices = await this.listDevices();
+    return devices.find(
+      (d) => d.productId.toLowerCase() === productId.toLowerCase() || d.id === productId
+    );
+  }
+
+  /**
+   * Finds authorized devices containing a specific name substring.
+   */
+  public async findDevicesByName(name: string): Promise<PhysicalPrinter[]> {
+    const devices = await this.listDevices();
+    return devices.filter((d) => d.name.toLowerCase().includes(name.toLowerCase()));
+  }
+
+  /**
+   * Explicit placeholder method for sending raw ESC/POS command sequences
+   * to a selected physical printer device.
+   */
+  public async sendEscPosPlaceholder(device: PhysicalPrinter, rawEscPosData: string): Promise<{ success: boolean; message: string }> {
+    console.log(`[PrinterService] Ingesting ESC/POS print job request for: ${device.name}`);
+    const res = await this.sendRawCommand(device.apiType, device.vendorId, device.productId, rawEscPosData);
+    return {
+      success: res.success,
+      message: `ESC/POS dispatch result: ${res.diagnostic}`
+    };
+  }
 }
 
 /**

@@ -7,6 +7,7 @@ import React, { useState, useEffect } from "react";
 import { useHMS } from "../context/HMSContext";
 import { WebUsbHidPrinterBridge } from "./WebUsbHidPrinterBridge";
 import { StaffRole, StaffUser, PrinterConfig } from "../types";
+import { usePrinter, PrinterService } from "../services/PrinterService";
 import {
   Settings,
   Building2,
@@ -70,6 +71,75 @@ export const SettingsModule: React.FC = () => {
     updatePrinter,
     deletePrinter
   } = useHMS();
+
+  const {
+    scannedDevices: discoveredUsbPrinters,
+    isScanning: isUsbScanning,
+    scanPhysicalPortsEmulated: scanUsbPrinters,
+    requestPhysicalUsbDevice,
+    requestPhysicalHidDevice
+  } = usePrinter();
+
+  const [defaultUsbPrinterId, setDefaultUsbPrinterId] = useState<string>("usb-phys-01");
+  const [usbTestPrintMessage, setUsbTestPrintMessage] = useState<string>("");
+  const [usbTestPrintSuccess, setUsbTestPrintSuccess] = useState<boolean | null>(null);
+
+  const triggerUsbTestPrint = async (device: any) => {
+    if (!device) return;
+    setUsbTestPrintMessage(`Generating high-fidelity dummy invoice payload...`);
+    setUsbTestPrintSuccess(null);
+
+    const dummyInvoiceBytes = 
+`========================================
+             OMNISUITE RESORT           
+          HARDWARE TEST RECEIPT         
+========================================
+DATE: 2026-06-22 07:48:19
+FOLIO NO: F-924-USB
+GUEST: EMMANUEL TESTER
+ROOM: 404 (PREMIUM PENTHOUSE VIEW)
+----------------------------------------
+Nightly Tariffs (3 Nights)    $1,050.00
+Spa Amenities & Wellness       $150.00
+Beverages Room Service         $85.00
+----------------------------------------
+SUBTOTAL:                     $1,285.00
+STATE & LOCAL TAX (15%):       $192.75
+REBATE ADJUSTMENT:             -$50.00
+========================================
+GRAND TOTAL:                  $1,427.75
+========================================
+PAYMENTS RECEIVED:            $1,427.75
+OUTSTANDING BALANCE:              $0.00
+========================================
+STATUS: PAID & SETTLED
+CHANNELS: DIRECT PHYSICAL PORT SUCCESS
+========================================
+Thank you for staying at OmniSuite!
+`;
+
+    try {
+      setUsbTestPrintMessage(`Transmitting ESC/POS packet stream (size: ${dummyInvoiceBytes.length} bytes)...`);
+      const result = await PrinterService.getInstance().sendRawCommand(
+        device.apiType,
+        device.vendorId,
+        device.productId,
+        dummyInvoiceBytes
+      );
+
+      if (result.success) {
+        setUsbTestPrintSuccess(true);
+        setUsbTestPrintMessage(`SUCCESS! Tested device '${device.name}'. ${result.diagnostic}`);
+        addAuditLog("PRINTER", `Successfully triggered dummy invoice test print on USB device: ${device.name}`);
+      } else {
+        setUsbTestPrintSuccess(false);
+        setUsbTestPrintMessage(`Failed to transmit raw packet. Reason: ${result.diagnostic}`);
+      }
+    } catch (err: any) {
+      setUsbTestPrintSuccess(false);
+      setUsbTestPrintMessage(`Error compiling/sending payload: ${err.message}`);
+    }
+  };
 
   // Active Sub Tab
   const [activeSubTab, setActiveSubTab] = useState<"profile" | "staff" | "printers" | "docs" | "system">("profile");
@@ -1323,6 +1393,165 @@ export const SettingsModule: React.FC = () => {
             </div>
           </div>
           
+          {/* SECTION: Printer Configuration (USB/HID Gateway) */}
+          <div className="bg-white p-5 rounded-xl border border-slate-150 shadow-xs space-y-4" id="usb-hid-discovery-section">
+            <h4 className="font-extrabold text-slate-800 text-xs uppercase tracking-wider border-b border-slate-50 pb-2.5 flex items-center gap-1.5 justify-between">
+              <span className="flex items-center gap-1.5">
+                <Network className="w-4 h-4 text-indigo-500 animate-pulse" />
+                Printer Configuration (USB / HID Hardware)
+              </span>
+              <span className="text-[10px] bg-indigo-50 text-indigo-700 font-mono font-bold px-1.5 py-0.5 rounded border border-indigo-100 uppercase">
+                RAW SERVICE BOUND
+              </span>
+            </h4>
+
+            <p className="text-xs text-slate-500 leading-relaxed font-normal">
+              Locate active physical USB or Human Interface Devices (HID) connected via desktop local ports. Deselect any other routing profiles and set your <strong className="text-slate-800">Default Target Spooler</strong>. Verify formatting instantly with dummy receipt invoice rendering.
+            </p>
+
+            {/* Scan triggers */}
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={scanUsbPrinters}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-4 py-2 text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-sm"
+              >
+                <RotateCcw className={`w-3.5 h-3.5 ${isUsbScanning ? "animate-spin" : ""}`} />
+                Scan USB/HID Ports
+              </button>
+
+              <button
+                type="button"
+                onClick={requestPhysicalUsbDevice}
+                className="bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-lg px-4 py-2 text-xs font-bold transition flex items-center gap-2 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5 text-indigo-500" />
+                Query WebUSB
+              </button>
+
+              <button
+                type="button"
+                onClick={requestPhysicalHidDevice}
+                className="bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-705 rounded-lg px-4 py-2 text-xs font-bold transition flex items-center gap-2 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5 text-indigo-500" />
+                Request WebHID
+              </button>
+            </div>
+
+            {/* Printers list */}
+            {discoveredUsbPrinters.length === 0 ? (
+              <div className="py-8 text-center bg-slate-50/50 rounded-xl border border-dashed border-slate-200 text-slate-450 text-xs flex flex-col items-center justify-center gap-1.5">
+                <Printer className="w-8 h-8 text-slate-350 stroke-1 animate-bounce" />
+                <div>
+                  <p className="font-bold text-slate-500">No discovered hardware interfaces yet</p>
+                  <p className="text-[10.5px]">Click "Scan USB/HID Ports" to index emulated or real local terminal line drivers.</p>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {discoveredUsbPrinters.map((device) => {
+                  const isDefault = defaultUsbPrinterId === device.id;
+                  return (
+                    <div
+                      key={device.id}
+                      className={`p-4 rounded-xl border transition duration-200 flex flex-col justify-between space-y-3 ${
+                        isDefault 
+                          ? "bg-indigo-50/30 border-indigo-200 shadow-3xs" 
+                          : "bg-slate-50 border-slate-150 hover:bg-slate-100/40"
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded font-mono uppercase border ${
+                            device.apiType === "WebUSB" 
+                              ? "bg-teal-50 text-teal-700 border-teal-150" 
+                              : "bg-violet-50 text-violet-700 border-violet-150"
+                          }`}>
+                            {device.apiType}
+                          </span>
+
+                          <span className={`flex items-center gap-1 text-[10px] font-bold ${
+                            device.status === "Online" ? "text-emerald-700" : "text-slate-400"
+                          }`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${
+                              device.status === "Online" ? "bg-emerald-500 animate-pulse" : "bg-slate-400"
+                            }`}></span>
+                            {device.status}
+                          </span>
+                        </div>
+
+                        <h5 className="font-extrabold text-slate-800 text-xs tracking-tight mt-2 flex items-center gap-1.5">
+                          {device.name}
+                          {isDefault && (
+                            <span className="bg-indigo-600 text-white font-mono text-[8.5px] font-bold px-1.5 py-0.2 rounded-full flex items-center gap-0.5 shadow-3xs">
+                              ★ DEFAULT
+                            </span>
+                          )}
+                        </h5>
+
+                        <p className="text-[10px] text-slate-500 font-mono mt-1 leading-normal">
+                          VID: {device.vendorId} &bull; PID: {device.productId} <br />
+                          Class: {device.endpointType}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 pt-2 border-t border-slate-100 flex-wrap justify-end font-sans">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDefaultUsbPrinterId(device.id);
+                            addAuditLog("PRINTER", `Assigned default active USB/HID printer node to: ${device.name}`);
+                          }}
+                          className={`px-2.5 py-1 text-[10px] font-bold rounded-lg transition border cursor-pointer ${
+                            isDefault
+                              ? "bg-slate-100 text-slate-400 border-slate-150 cursor-default"
+                              : "bg-white hover:bg-slate-50 text-slate-700 border-slate-200"
+                          }`}
+                          disabled={isDefault}
+                        >
+                          {isDefault ? "Active Default" : "Set as Default"}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => triggerUsbTestPrint(device)}
+                          className="bg-indigo-650 hover:bg-indigo-700 text-white font-bold rounded-lg px-2.5 py-1 text-[10px] transition cursor-pointer flex items-center gap-1.5 shadow-3xs"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          Test Print
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Active spool feedback messages */}
+            {usbTestPrintMessage && (
+              <div className={`p-3 rounded-lg border text-xs font-mono flex items-start gap-2 animate-fade-in ${
+                usbTestPrintSuccess === true
+                  ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                  : usbTestPrintSuccess === false
+                  ? "bg-red-50 border-red-200 text-red-800"
+                  : "bg-slate-50 border-slate-200 text-slate-700"
+              }`}>
+                {usbTestPrintSuccess === true ? (
+                  <span className="text-emerald-600 shrink-0 select-none font-bold">✔</span>
+                ) : usbTestPrintSuccess === false ? (
+                  <span className="text-red-600 shrink-0 select-none font-bold">❌</span>
+                ) : (
+                  <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-ping mt-1"></span>
+                )}
+                <div className="space-y-1">
+                  <span className="font-bold uppercase text-[9.5px]">Printer Spool Status</span>
+                  <p className="leading-tight break-all text-slate-650">{usbTestPrintMessage}</p>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Direct USB & HID Hardware Discovery Port Bridge */}
           <WebUsbHidPrinterBridge />
         </div>
