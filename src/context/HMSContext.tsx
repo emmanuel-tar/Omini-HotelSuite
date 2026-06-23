@@ -165,7 +165,8 @@ const INITIAL_INVOICES: Invoice[] = [
 const INITIAL_PRINTERS: PrinterConfig[] = [
   { id: "prt_1", name: "Front Desk Thermal Reception", location: "Front Desk", type: "Thermal", isDefault: true, status: "Online" },
   { id: "prt_2", name: "Accounting Main Billing Jet", location: "Accounting", type: "Laser", isDefault: false, status: "Online" },
-  { id: "prt_3", name: "Kitchen Culinary Orders", location: "Restaurant", type: "Thermal", isDefault: false, status: "Online" }
+  { id: "prt_3", name: "Kitchen Culinary Orders", location: "Restaurant", type: "Thermal", isDefault: false, status: "Online" },
+  { id: "prt_4", name: "Web Browser Standard PDF/Print Spooler", location: "Front Desk", type: "Web Browser Printer", isDefault: false, status: "Online", connection: "Web Browser Print", ip: "browser://native-print", assignedRole: "Bill Invoices" }
 ];
 
 
@@ -307,7 +308,32 @@ export const HMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [printers, setPrinters] = useState<PrinterConfig[]>(() => {
     const saved = localStorage.getItem("hms_printers");
-    return saved ? JSON.parse(saved) : INITIAL_PRINTERS;
+    if (saved) {
+      try {
+        const parsedUserPrinters: PrinterConfig[] = JSON.parse(saved);
+        const hasWebBrowser = parsedUserPrinters.some(p => p.type === "Web Browser Printer" || p.connection === "Web Browser Print");
+        if (!hasWebBrowser) {
+          const webPr: PrinterConfig = {
+            id: "prt_4",
+            name: "Web Browser Standard PDF/Print Spooler",
+            location: "Front Desk",
+            type: "Web Browser Printer",
+            isDefault: false,
+            status: "Online",
+            connection: "Web Browser Print",
+            ip: "browser://native-print",
+            assignedRole: "Bill Invoices"
+          };
+          const updated = [...parsedUserPrinters, webPr];
+          localStorage.setItem("hms_printers", JSON.stringify(updated));
+          return updated;
+        }
+        return parsedUserPrinters;
+      } catch (e) {
+        return INITIAL_PRINTERS;
+      }
+    }
+    return INITIAL_PRINTERS;
   });
 
   const [prepayments, setPrepayments] = useState<Prepayment[]>(() => {

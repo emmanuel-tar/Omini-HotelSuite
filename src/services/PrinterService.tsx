@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useHMS } from "../context/HMSContext";
 
 export interface PhysicalPrinter {
@@ -343,6 +343,42 @@ export class PrinterService {
       message: `ESC/POS dispatch result: ${res.diagnostic}`
     };
   }
+
+  /**
+   * Triggers a device selection flow and sends a sample 'System Check' text string to the chosen ESC/POS printer.
+   */
+  public async triggerTestPrintSelectionFlow(apiType: "WebUSB" | "WebHID" = "WebUSB"): Promise<{ success: boolean; message: string }> {
+    console.log(`[PrinterService] Initiating device selection flow for ${apiType} test print...`);
+    try {
+      const device = apiType === "WebUSB" ? await this.requestUsbAccess() : await this.requestHidAccess();
+      if (!device) {
+        return { success: false, message: `Device selection flow was aborted or canceled by the user.` };
+      }
+      
+      const systemCheckString = 
+        `\n================================\n` +
+        `       PRINTER SYSTEM CHECK     \n` +
+        `================================\n` +
+        `DEVICE: ${device.name}\n` +
+        `VENDOR: ${device.vendorId} | PRODUCT: ${device.productId}\n` +
+        `PROTOCOL: ${apiType}\n` +
+        `STATUS: COM Link Ready\n` +
+        `TIME: ${new Date().toLocaleString()}\n` +
+        `================================\n\n\n`;
+
+      const result = await this.sendRawCommand(device.apiType, device.vendorId, device.productId, systemCheckString);
+      return {
+        success: result.success,
+        message: `ESC/POS sample sent successfully to ${device.name}. Result: ${result.diagnostic}`
+      };
+    } catch (error: any) {
+      console.error(`[PrinterService] Device selection test print failed:`, error);
+      return {
+        success: false,
+        message: `Device selection or test transmission aborted: ${error.message || error}`
+      };
+    }
+  }
 }
 
 /**
@@ -355,6 +391,9 @@ export const usePrinter = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [transmissionLogs, setTransmissionLogs] = useState<string[]>([]);
   const [errorContext, setErrorContext] = useState<string | null>(null);
+
+  // Connection & Disconnection Notification State
+  const [disconnectToast, setDisconnectToast] = useState<{ name: string; apiType: string } | null>(null);
 
   const service = PrinterService.getInstance();
 
@@ -378,6 +417,152 @@ export const usePrinter = () => {
   useEffect(() => {
     loadApprovedDevices();
   }, [loadApprovedDevices]);
+
+  // Listen to physical USB/HID device disconnects globally
+  useEffect(() => {
+    const handleUsbDisconnect = (event: any) => {
+      const dev = event.device;
+      const devName = dev.productName || `USB Device (${dev.vendorId.toString(16)}:${dev.productId.toString(16)})`;
+      const msg = `🔌 WebUSB Device Disconnected: ${devName}`;
+      addLog(msg);
+      addAuditLog("PRINTER", msg);
+      setDisconnectToast({ name: devName, apiType: "WebUSB" });
+      
+      // Keep state fresh by clearing matched device ID
+      setScannedDevices(prev => prev.filter(d => {
+        const hexVendor = "0x" + dev.vendorId.toString(16).toUpperCase().padStart(4, "0");
+        const hexProduct = "0x" + dev.productId.toString(16).toUpperCase().padStart(4, "0");
+        return !(d.vendorId === hexVendor && d.productId === hexProduct);
+      }));
+    };
+
+    const handleHidDisconnect = (event: any) => {
+      const dev = event.device;
+      const devName = dev.productName || `HID Device (${dev.vendorId.toString(16)}:${dev.productId.toString(16)})`;
+      const msg = `🔌 WebHID Device Disconnected: ${devName}`;
+      addLog(msg);
+      addAuditLog("PRINTER", msg);
+      setDisconnectToast({ name: devName, apiType: "WebHID" });
+
+      // Keep state fresh by clearing matched device ID
+      setScannedDevices(prev => prev.filter(d => {
+        const hexVendor = "0x" + dev.vendorId.toString(16).toUpperCase().padStart(4, "0");
+        const hexProduct = "0x" + dev.productId.toString(16).toUpperCase().padStart(4, "0");
+        return !(d.vendorId === hexVendor && d.productId === hexProduct);
+      }));
+    };
+
+    const handleUsbConnect = (event: any) => {
+      const dev = event.device;
+      const devName = dev.productName || `USB Device (${dev.vendorId.toString(16)}:${dev.productId.toString(16)})`;
+      const msg = `🔌 WebUSB Device Connected: ${devName}`;
+      addLog(msg);
+      addAuditLog("PRINTER", msg);
+
+      const newDev = {
+        id: `usb-${dev.vendorId}-${dev.productId}-${dev.serialNumber || "0"}`,
+        name: devName,
+        vendorId: "0x" + dev.vendorId.toString(16).toUpperCase().padStart(4, "0"),
+        productId: "0x" + dev.productId.toString(16).toUpperCase().padStart(4, "0"),
+        serialNumber: dev.serialNumber,
+        manufacturerName: dev.manufacturerName,
+        productName: dev.productName,
+        apiType: "WebUSB" as const,
+        endpointType: "Bulk Transfer Direct Printer",
+        status: "Online" as const
+      };
+
+      setScannedDevices(prev => {
+        const filtered = prev.filter(d => !(d.vendorId === newDev.vendorId && d.productId === newDev.productId));
+        return [newDev, ...filtered];
+      });
+    };
+
+    const handleHidConnect = (event: any) => {
+      const dev = event.device;
+      const devName = dev.productName || `HID Device (${dev.vendorId.toString(16)}:${dev.productId.toString(16)})`;
+      const msg = `🔌 WebHID Device Connected: ${devName}`;
+      addLog(msg);
+      addAuditLog("PRINTER", msg);
+
+      const newDev = {
+        id: `hid-${dev.vendorId}-${dev.productId}-${dev.serialNumber || "0"}`,
+        name: devName,
+        vendorId: "0x" + dev.vendorId.toString(16).toUpperCase().padStart(4, "0"),
+        productId: "0x" + dev.productId.toString(16).toUpperCase().padStart(4, "0"),
+        serialNumber: dev.serialNumber,
+        manufacturerName: dev.manufacturerName,
+        productName: dev.productName,
+        apiType: "WebHID" as const,
+        endpointType: "Direct Communication Interface",
+        status: "Online" as const
+      };
+
+      setScannedDevices(prev => {
+        const filtered = prev.filter(d => !(d.vendorId === newDev.vendorId && d.productId === newDev.productId));
+        return [newDev, ...filtered];
+      });
+    };
+
+    const nav = navigator as any;
+    if (nav?.usb && typeof nav.usb.addEventListener === "function") {
+      nav.usb.addEventListener("disconnect", handleUsbDisconnect);
+      nav.usb.addEventListener("connect", handleUsbConnect);
+    }
+    if (nav?.hid && typeof nav.hid.addEventListener === "function") {
+      nav.hid.addEventListener("disconnect", handleHidDisconnect);
+      nav.hid.addEventListener("connect", handleHidConnect);
+    }
+
+    return () => {
+      if (nav?.usb && typeof nav.usb.removeEventListener === "function") {
+        nav.usb.removeEventListener("disconnect", handleUsbDisconnect);
+        nav.usb.removeEventListener("connect", handleUsbConnect);
+      }
+      if (nav?.hid && typeof nav.hid.removeEventListener === "function") {
+        nav.hid.removeEventListener("disconnect", handleHidDisconnect);
+        nav.hid.removeEventListener("connect", handleHidConnect);
+      }
+    };
+  }, [addLog, addAuditLog]);
+
+  // Auto-dismiss disconnect alert toast
+  useEffect(() => {
+    if (disconnectToast) {
+      const timer = setTimeout(() => {
+        setDisconnectToast(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [disconnectToast]);
+
+  const ToastElement = disconnectToast ? (
+    <div 
+      className="fixed bottom-6 right-6 z-[9999] max-w-sm w-full bg-slate-900 text-white rounded-xl border border-red-500/40 p-4 shadow-xl flex items-start gap-3 animate-fade-in"
+      id="printer-disconnect-toast-alert"
+    >
+      <div className="p-1.5 bg-red-950 text-red-500 rounded-lg border border-red-500/20">
+        <svg className="w-5 h-5 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        </svg>
+      </div>
+      <div className="flex-1 min-w-0">
+        <h6 className="font-extrabold text-[11px] text-red-400 tracking-wide uppercase mb-0.5">
+          Printer Disconnected
+        </h6>
+        <p className="text-[10.5px] text-slate-300 font-medium leading-tight">
+          The <strong className="text-white font-semibold">{disconnectToast.name}</strong> printer ({disconnectToast.apiType}) was disconnected.
+        </p>
+      </div>
+      <button 
+        type="button"
+        onClick={() => setDisconnectToast(null)}
+        className="text-slate-400 hover:text-white font-bold text-xs p-0.5 cursor-pointer"
+      >
+        ✕
+      </button>
+    </div>
+  ) : null;
 
   const requestPhysicalUsbDevice = async () => {
     setErrorContext(null);
@@ -495,6 +680,28 @@ export const usePrinter = () => {
     return true;
   };
 
+  const triggerDeviceSelectionAndTestPrint = async (apiType: "WebUSB" | "WebHID" = "WebUSB") => {
+    setIsScanning(true);
+    addLog(`Initiating ${apiType} Direct Dev Selection Flow...`);
+    setErrorContext(null);
+    try {
+      const result = await service.triggerTestPrintSelectionFlow(apiType);
+      if (result.success) {
+        addLog(`✅ Test Print Successful: ${result.message}`);
+        addAuditLog("PRINTER", `Direct test print flow completed: ${result.message}`);
+      } else {
+        addLog(`❌ Test Print Fail: ${result.message}`);
+      }
+      return result;
+    } catch (err: any) {
+      addLog(`❌ Error in selection/test flow: ${err.message || err}`);
+      setErrorContext(err.message || String(err));
+      return { success: false, message: err.message || String(err) };
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
   return {
     scannedDevices,
     isScanning,
@@ -507,6 +714,72 @@ export const usePrinter = () => {
     scanPhysicalPortsEmulated,
     spoolRawTestCommand,
     mountPrinterToOmniSuite,
-    clearScans: () => setScannedDevices([])
+    triggerDeviceSelectionAndTestPrint,
+    clearScans: () => setScannedDevices([]),
+    clearTransmissionLogs: () => setTransmissionLogs([]),
+    addCustomDiagnosticLog: (msg: string) => addLog(msg),
+    disconnectToast,
+    ToastElement
   };
+};
+
+/**
+ * Interactive 'Test Print' button component that triggers the direct WebUSB / WebHID device selection flow
+ * and sends a sample 'System Check' text string to the chosen ESC/POS printer.
+ */
+export const PrinterServiceTestPrintButton: React.FC<{ apiType?: "WebUSB" | "WebHID" }> = ({ apiType = "WebUSB" }) => {
+  const { triggerDeviceSelectionAndTestPrint, isScanning } = usePrinter();
+  const [status, setStatus] = useState<{ success?: boolean; message?: string } | null>(null);
+
+  const handleTestPrintClick = async () => {
+    setStatus(null);
+    const res = await triggerDeviceSelectionAndTestPrint(apiType as "WebUSB" | "WebHID");
+    setStatus(res);
+  };
+
+  return (
+    <div className="flex flex-col gap-2 bg-slate-900 border border-slate-800 rounded-xl p-4 text-white shadow-xs" id="printer-service-test-print-container">
+      <div className="flex items-center justify-between">
+        <div>
+          <h5 className="font-extrabold text-xs tracking-wide text-indigo-400 uppercase">
+            Hardware Quick Test Spooler
+          </h5>
+          <p className="text-[10px] text-slate-400 font-medium">
+            Queries native browser {apiType} interface for instant thermal receipt verification.
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={isScanning}
+          onClick={handleTestPrintClick}
+          className="bg-indigo-600 hover:bg-indigo-500 border border-indigo-700 text-white rounded-lg px-3 py-1.5 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-3xs"
+          id="printer-service-test-print-btn"
+        >
+          {isScanning ? (
+            <>
+              <span className="w-2.5 h-2.5 rounded-full bg-white opacity-75 animate-ping"></span>
+              Pairing & Sending...
+            </>
+          ) : (
+            <>
+              ⚡ Test Print Selection
+            </>
+          )}
+        </button>
+      </div>
+
+      {status && (
+        <div className={`p-2.5 rounded text-[10px] font-mono leading-tight border ${
+          status.success 
+            ? "bg-emerald-950/50 border-emerald-900/50 text-emerald-400" 
+            : "bg-red-950/50 border-red-900/50 text-red-400"
+        }`} id="printer-service-test-print-status">
+          <strong className="block uppercase text-[8px] tracking-wide mb-1">
+            {status.success ? "✔ Transmission Succeeded" : "❌ Connection Aborted"}
+          </strong>
+          <p className="break-words">{status.message}</p>
+        </div>
+      )}
+    </div>
+  );
 };

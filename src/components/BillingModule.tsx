@@ -5,6 +5,7 @@
 
 import React, { useState } from "react";
 import { useHMS } from "../context/HMSContext";
+import { PrinterService } from "../services/PrinterService";
 import { Invoice, InvoiceStatus, PaymentMethod, ReservationStatus, LoyaltyTier } from "../types";
 import {
   FileText,
@@ -286,25 +287,88 @@ export const BillingModule: React.FC = () => {
 
   const simulatePrintReceipt = () => {
     if (!printInvoice) return;
+    const selectedPr = printers.find(p => p.id === selectedPrinterId) || printers[0] || { name: "System Default spooler", connection: "", type: "" };
+    const isWebBrowserPrinter = selectedPr.connection === "Web Browser Print" || selectedPr.type === "Web Browser Printer";
+
     setIsSpoolingPrint(true);
-    setPrintStatusMsg("Initializing secure thermal buffer pool...");
+    setPrintStatusMsg(isWebBrowserPrinter ? "Launching Web Browser Native Print Spooler..." : "Initializing secure thermal buffer pool...");
     
     setTimeout(() => {
-      const selectedPr = printers.find(p => p.id === selectedPrinterId) || printers[0] || { name: "System Default spooler" };
-      setPrintStatusMsg(`Connecting to [${selectedPr.name}] queue routing port...`);
+      setPrintStatusMsg(isWebBrowserPrinter ? "Routing formatted HTML template to local layout viewport..." : `Connecting to [${selectedPr.name}] queue routing port...`);
       setTimeout(() => {
-        setPrintStatusMsg(`Transmitting TCP bitmap raster packets payload [1/3]...`);
+        setPrintStatusMsg(isWebBrowserPrinter ? "System handed over controls to browser layout engine!" : `Transmitting TCP bitmap raster packets payload [1/3]...`);
         setTimeout(() => {
-          setPrintStatusMsg(`Finalizing byte cuts on thermal rolling device queue...`);
-          setTimeout(() => {
-            setIsSpoolingPrint(false);
-            setPrintStatusMsg("");
-            addAuditLog("PRINTER", `Printed Folio Invoice Receipt #${printInvoice.id} to connected queue: ${selectedPr.name}`);
-            alert(`SUCCESS: Invoice Ref #${printInvoice.id} printed to ${selectedPr.name} successfully!`);
-          }, 800);
-        }, 800);
-      }, 800);
-    }, 800);
+          setIsSpoolingPrint(false);
+          setPrintStatusMsg("");
+          addAuditLog("PRINTER", isWebBrowserPrinter 
+            ? `Printed Folio Invoice Receipt #${printInvoice.id} using Web Browser Print Spooler: ${selectedPr.name}`
+            : `Printed Folio Invoice Receipt #${printInvoice.id} to connected queue: ${selectedPr.name}`
+          );
+          if (isWebBrowserPrinter) {
+            window.print();
+          } else {
+            const isPhysical = selectedPr.connection?.includes("USB Controller") || selectedPr.connection?.includes("HID Controller");
+            if (isPhysical) {
+              const matches = selectedPr.connection.match(/0x[0-9A-Fa-f]{4}/g);
+              if (matches && matches.length >= 2) {
+                const vendorId = matches[0];
+                const productId = matches[1];
+                const apiType = selectedPr.connection.includes("USB") ? "WebUSB" : "WebHID";
+                
+                const invoiceTxt = 
+`========================================
+             OMNISUITE RESORT           
+              INVOICE RECEIPT           
+========================================
+INVOICE ID: #${printInvoice.id}
+GUEST NAME: ${printInvoice.guestName}
+ROOM ASSIGNMENT: ${printInvoice.roomNumber}
+DATE: ${new Date(printInvoice.createdAt).toLocaleDateString()}
+PAYMENT METHOD: ${printInvoice.paymentMethod || "CREDIT CASH"}
+----------------------------------------
+DESCRIPTION                      AMOUNT
+----------------------------------------
+Subtotal charges               ${formatUSD(printInvoice.subtotal)}
+Tax (VAT & Tourism Levy)       ${formatUSD(printInvoice.tax)}
+Discounts Applied             -${formatUSD(printInvoice.discount)}
+----------------------------------------
+GRAND TOTAL:                   ${formatUSD(printInvoice.total)}
+AMOUNT PAID:                   ${formatUSD(printInvoice.paidAmount)}
+BALANCE DUE:                   ${formatUSD(Math.max(0, printInvoice.total - printInvoice.paidAmount))}
+========================================
+STATUS: ${printInvoice.status.toUpperCase()}
+========================================
+Thank you for staying with us!
+We hope to welcome you back soon.
+========================================
+
+
+\n\n\n`;
+
+                PrinterService.getInstance().sendRawCommand(
+                  apiType,
+                  vendorId,
+                  productId,
+                  invoiceTxt
+                ).then((res) => {
+                  if (res.success) {
+                    alert(`SUCCESS: Invoice Ref #${printInvoice.id} compiled and transmitted directly to connected physical thermal device!\n${res.diagnostic}`);
+                  } else {
+                    alert(`TRANSMISSION FAILURE: ${res.diagnostic}\nsimulated output generated successfully instead.`);
+                  }
+                }).catch((err) => {
+                  alert(`PORT CONNECTION ERROR: ${err.message || err}`);
+                });
+              } else {
+                alert(`SUCCESS: Invoice Ref #${printInvoice.id} printed to ${selectedPr.name} successfully!`);
+              }
+            } else {
+              alert(`SUCCESS: Invoice Ref #${printInvoice.id} printed to ${selectedPr.name} successfully!`);
+            }
+          }
+        }, isWebBrowserPrinter ? 450 : 800);
+      }, 700);
+    }, 700);
   };
 
   const executeEmailReceipt = (e: React.FormEvent) => {

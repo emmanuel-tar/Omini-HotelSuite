@@ -327,7 +327,7 @@ const MainHMSWorkspace: React.FC = () => {
           <div className="hidden lg:flex items-center gap-3 border-r border-slate-200 pr-4">
             <span className="text-[11px] text-slate-500 font-mono flex items-center gap-1 bg-slate-50 px-2 py-1 rounded">
               <Clock className="w-3.5 h-3.5 text-slate-400" />
-              SIM TIME: <strong className="text-slate-800">2026-06-21 UTC</strong>
+              SIM TIME: <strong className="text-slate-800">{new Date().toISOString().split("T")[0]} UTC</strong>
             </span>
 
             <span className="text-[11px] text-slate-500 font-mono flex items-center gap-1 bg-slate-50 px-2 py-1 rounded">

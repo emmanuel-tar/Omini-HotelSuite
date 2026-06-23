@@ -52,9 +52,17 @@ export const ReservationModule: React.FC = () => {
   // High-level sub-tab selection
   const [activeSubTab, setActiveSubTab] = useState<"calendar" | "ledger" | "form" | "addons">("calendar");
 
+  const getOffsetDate = (days: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return d.toISOString().split("T")[0];
+  };
+
+  const todayStr = getOffsetDate(0);
+
   // --- Sub-Tab 1: 📅 Room & Activities Calendar config ---
   const [calendarView, setCalendarView] = useState<"day" | "week" | "month">("week");
-  const [calendarStartDate, setCalendarStartDate] = useState<string>("2026-06-21");
+  const [calendarStartDate, setCalendarStartDate] = useState<string>(getOffsetDate(-1));
   const [selectedCalendarResId, setSelectedCalendarResId] = useState<string | null>(null);
   const [showSyncModal, setShowSyncModal] = useState<boolean>(false);
   const [syncStep, setSyncStep] = useState<"idle" | "connecting" | "success">("idle");
@@ -77,8 +85,8 @@ export const ReservationModule: React.FC = () => {
   const [guestPhone, setGuestPhone] = useState("");
   const [guestCount, setGuestCount] = useState<number>(2);
   const [gRoomType, setGRoomType] = useState<RoomType>(RoomType.Standard);
-  const [gCheckIn, setGCheckIn] = useState("2026-06-22");
-  const [gCheckOut, setGCheckOut] = useState("2026-06-25");
+  const [gCheckIn, setGCheckIn] = useState(getOffsetDate(0));
+  const [gCheckOut, setGCheckOut] = useState(getOffsetDate(3));
   const [gPayment, setGPayment] = useState<PaymentMethod>(PaymentMethod.CreditCard);
   const [gPackageId, setGPackageId] = useState("");
   const [gNotes, setGNotes] = useState("");
@@ -91,7 +99,7 @@ export const ReservationModule: React.FC = () => {
   // --- Sub-Tab 4: 🛎️ Add-On Activities ---
   const [srvResId, setSrvResId] = useState("");
   const [srvId, setSrvId] = useState("");
-  const [srvDate, setSrvDate] = useState("2026-06-23");
+  const [srvDate, setSrvDate] = useState(getOffsetDate(0));
   const [srvTime, setSrvTime] = useState("14:00");
   const [srvQty, setSrvQty] = useState<number>(1);
   const [srvStaff, setSrvStaff] = useState("Assigned Specialist");
@@ -185,7 +193,7 @@ export const ReservationModule: React.FC = () => {
       if (new Date(gCheckOut) <= new Date(gCheckIn)) {
         errors.gCheckOut = "Check-out date must occur after check-in date.";
       }
-      if (new Date(gCheckIn) < new Date("2026-06-20")) {
+      if (new Date(gCheckIn) < new Date(getOffsetDate(-3))) {
         errors.gCheckIn = "Check-in date cannot lie in the prior history.";
       }
       if (Object.keys(errors).length > 0) {
@@ -274,8 +282,8 @@ export const ReservationModule: React.FC = () => {
     setGuestPhone("");
     setGuestCount(2);
     setGRoomType(RoomType.Standard);
-    setGCheckIn("2026-06-22");
-    setGCheckOut("2026-06-25");
+    setGCheckIn(getOffsetDate(0));
+    setGCheckOut(getOffsetDate(3));
     setGPackageId("");
     setGNotes("");
     setConfirmedRes(null);
@@ -561,7 +569,7 @@ export const ReservationModule: React.FC = () => {
                   const dayLabel = new Date(dateVal).toLocaleDateString("en-US", { weekday: "short" });
                   const dayNum = dateVal.split("-")[2];
                   const dMonth = new Date(dateVal).toLocaleDateString("en-US", { month: "short" });
-                  const isToday = dateVal === "2026-06-22"; // simulation calendar check date
+                  const isToday = dateVal === todayStr; // simulation calendar check date
 
                   return (
                     <div

@@ -34,7 +34,7 @@ export const ServicesModule: React.FC = () => {
   const [showAddBooking, setShowAddBooking] = useState(false);
   const [activeResId, setActiveResId] = useState("");
   const [activeSrvId, setActiveSrvId] = useState("");
-  const [actDate, setActDate] = useState("2026-06-21");
+  const [actDate, setActDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [actTime, setActTime] = useState("10:00");
   const [actQty, setActQty] = useState(1);
   const [assignedTeamMember, setAssignedTeamMember] = useState("");

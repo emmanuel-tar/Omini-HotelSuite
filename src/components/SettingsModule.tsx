@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from "react";
 import { useHMS } from "../context/HMSContext";
 import { WebUsbHidPrinterBridge } from "./WebUsbHidPrinterBridge";
+import { PrintDiagnosticsPanel } from "./PrintDiagnosticsPanel";
 import { StaffRole, StaffUser, PrinterConfig } from "../types";
 import { usePrinter, PrinterService } from "../services/PrinterService";
 import {
@@ -40,7 +41,12 @@ import {
   Search,
   Laptop,
   Sparkles,
-  Check
+  Check,
+  Edit,
+  Cable,
+  Cpu,
+  Wrench,
+  Terminal
 } from "lucide-react";
 
 // Structure for Permissions Item
@@ -54,6 +60,96 @@ interface RolePermission {
   housekeepingAllowed: boolean;
   accountantAllowed: boolean;
 }
+
+// Standalone helpers for ESC/POS hexadecimal command parser and debugger
+const parseHexToUint8Array = (hexStr: string): Uint8Array => {
+  const cleanHex = hexStr.replace(/[^a-fA-F0-9]/g, "");
+  if (cleanHex.length % 2 !== 0) {
+    throw new Error("Hexadecimal string must have an even length (each byte is 2 hex characters).");
+  }
+  const bytes = new Uint8Array(cleanHex.length / 2);
+  for (let i = 0; i < cleanHex.length; i += 2) {
+    bytes[i / 2] = parseInt(cleanHex.substring(i, i + 2), 16);
+  }
+  return bytes;
+};
+
+const decodeEscPosBytes = (bytes: Uint8Array): string[] => {
+  const decoded: string[] = [];
+  let i = 0;
+  while (i < bytes.length) {
+    const b = bytes[i];
+    if (b === 0x1B) { // ESC
+      if (i + 1 < bytes.length) {
+        const next = bytes[i + 1];
+        if (next === 0x40) {
+          decoded.push("[ESC @ (Initialize/Reset)]");
+          i += 2;
+          continue;
+        } else if (next === 0x45) { // Bold ESC E n
+          const val = i + 2 < bytes.length ? bytes[i + 2] : 0;
+          decoded.push(`[ESC E (Bold Mode: ${val === 1 ? "ON" : "OFF"})]`);
+          i += 3;
+          continue;
+        } else if (next === 0x21) { // ESC ! n
+          const val = i + 2 < bytes.length ? bytes[i + 2] : 0;
+          decoded.push(`[ESC ! (Print Mode Mask: 0x${val.toString(16).toUpperCase()})]`);
+          i += 3;
+          continue;
+        } else if (next === 0x2D) { // ESC - n (Underline)
+          const val = i + 2 < bytes.length ? bytes[i + 2] : 0;
+          decoded.push(`[ESC - (Underline: ${val === 1 ? "ON" : "OFF"})]`);
+          i += 3;
+          continue;
+        }
+        decoded.push(`[ESC 0x${next.toString(16).toUpperCase()}]`);
+        i += 2;
+        continue;
+      }
+      decoded.push("[ESC]");
+      i += 1;
+    } else if (b === 0x1D) { // GS
+      if (i + 1 < bytes.length) {
+        const next = bytes[i + 1];
+        if (next === 0x56) { // Page Cut GS V m
+          const val = i + 2 < bytes.length ? bytes[i + 2] : 0;
+          decoded.push(`[GS V (Paper Cut: 0x${val.toString(16).toUpperCase()})]`);
+          i += 2;
+          // check if m is 0 or 1, or has another byte
+          if (i < bytes.length) {
+            decoded[decoded.length - 1] += ` (Feed: ${bytes[i]} lines)`;
+            i += 1;
+          }
+          continue;
+        }
+        decoded.push(`[GS 0x${next.toString(16).toUpperCase()}]`);
+        i += 2;
+        continue;
+      }
+      decoded.push("[GS]");
+      i += 1;
+    } else if (b === 0x0A) {
+      decoded.push("[LF (Line Feed)]");
+      i += 1;
+    } else if (b === 0x0D) {
+      decoded.push("[CR (Carriage Return)]");
+      i += 1;
+    } else if (b === 0x09) {
+      decoded.push("[HT (Horizontal Tab)]");
+      i += 1;
+    } else if (b === 0x07) {
+      decoded.push("[BEL (Sound Buzzer)]");
+      i += 1;
+    } else if (b >= 32 && b <= 126) {
+      decoded.push(String.fromCharCode(b));
+      i += 1;
+    } else {
+      decoded.push(`[0x${b.toString(16).toUpperCase().padStart(2, "0")}]`);
+      i += 1;
+    }
+  }
+  return decoded;
+};
 
 export const SettingsModule: React.FC = () => {
   const {
@@ -77,7 +173,8 @@ export const SettingsModule: React.FC = () => {
     isScanning: isUsbScanning,
     scanPhysicalPortsEmulated: scanUsbPrinters,
     requestPhysicalUsbDevice,
-    requestPhysicalHidDevice
+    requestPhysicalHidDevice,
+    ToastElement
   } = usePrinter();
 
   const [defaultUsbPrinterId, setDefaultUsbPrinterId] = useState<string>("usb-phys-01");
@@ -139,6 +236,49 @@ Thank you for staying at OmniSuite!
       setUsbTestPrintSuccess(false);
       setUsbTestPrintMessage(`Error compiling/sending payload: ${err.message}`);
     }
+  };
+
+  const handleDirectBindUSB = async (printerId: string, printerName: string) => {
+    try {
+      const device = await requestPhysicalUsbDevice();
+      if (device) {
+        updatePrinter(printerId, {
+          connection: `USB Controller (${device.vendorId}:${device.productId})`,
+          ip: `Serial: ${device.serialNumber || "N/A"} (${device.apiType})`,
+          type: "Thermal Roll 80mm",
+          status: device.status
+        });
+        addAuditLog("PRINTER", `Successfully bound physical WebUSB port for printer '${printerName}' to device: ${device.name}`);
+      }
+    } catch (error: any) {
+      console.error("[SettingsModule] USB binding canceled/failed:", error);
+    }
+  };
+
+  const handleDirectBindHID = async (printerId: string, printerName: string) => {
+    try {
+      const device = await requestPhysicalHidDevice();
+      if (device) {
+        updatePrinter(printerId, {
+          connection: `HID Controller (${device.vendorId}:${device.productId})`,
+          ip: `Serial: ${device.serialNumber || "N/A"} (${device.apiType})`,
+          type: "Laser / HID Port",
+          status: device.status
+        });
+        addAuditLog("PRINTER", `Successfully bound physical WebHID port for printer '${printerName}' to device: ${device.name}`);
+      }
+    } catch (error: any) {
+      console.error("[SettingsModule] HID binding canceled/failed:", error);
+    }
+  };
+
+  const handleUnbindHardware = (printerId: string, printerName: string) => {
+    updatePrinter(printerId, {
+      connection: "Wi-Fi Network",
+      ip: "192.168.1.50",
+      type: "Thermal Roll 80mm"
+    });
+    addAuditLog("PRINTER", `Unbound physical hardware ports from printer entity: ${printerName}`);
   };
 
   // Active Sub Tab
@@ -206,6 +346,15 @@ Thank you for staying at OmniSuite!
   const [newPrIp, setNewPrIp] = useState("192.168.1.");
   const [newPrRole, setNewPrRole] = useState<string>("All Receipts");
 
+  // Printer editing state variables
+  const [editingPrinterId, setEditingPrinterId] = useState<string | null>(null);
+  const [editPrName, setEditPrName] = useState("");
+  const [editPrType, setEditPrType] = useState("");
+  const [editPrLocation, setEditPrLocation] = useState("");
+  const [editPrConn, setEditPrConn] = useState("");
+  const [editPrIp, setEditPrIp] = useState("");
+  const [editPrRole, setEditPrRole] = useState("");
+
   // Default bindings state
   const [defInvoicePr, setDefInvoicePr] = useState("prt_2");
   const [defReceiptPr, setDefReceiptPr] = useState("prt_1");
@@ -216,6 +365,13 @@ Thank you for staying at OmniSuite!
   const [testProgress, setTestProgress] = useState(0);
   const [testMsg, setTestMsg] = useState("");
   const [testSuccess, setTestSuccess] = useState(false);
+
+  // ESC/POS Command Debugger state
+  const [activeDebuggingPrinter, setActiveDebuggingPrinter] = useState<PrinterConfig | null>(null);
+  const [debugHexInput, setDebugHexInput] = useState("1B 40 1B 45 01 48 45 58 20 44 45 42 55 47 1B 45 00 0A 1D 56 00");
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [debugSending, setDebugSending] = useState(false);
+  const [debugStatus, setDebugStatus] = useState<{ success: boolean; message: string } | null>(null);
 
   // 4. Document & Receipt Design Lab State
   const [brandColor, setBrandColor] = useState<"indigo" | "emerald" | "amber" | "rose" | "slate">("indigo");
@@ -314,6 +470,33 @@ Thank you for staying at OmniSuite!
     addAuditLog("PRINTER", `Removed network printer interface wrapper: ${name}`);
   };
 
+  const startEditingPrinter = (printer: any) => {
+    setEditingPrinterId(printer.id);
+    setEditPrName(printer.name);
+    setEditPrType(printer.type);
+    setEditPrLocation(printer.location || "Front Desk");
+    setEditPrConn(printer.connection || "Wi-Fi Network");
+    setEditPrIp(printer.ip || "192.168.1.");
+    setEditPrRole(printer.assignedRole || "All Receipts");
+  };
+
+  const handleEditPrinterSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPrinterId) return;
+
+    updatePrinter(editingPrinterId, {
+      name: editPrName,
+      type: editPrType,
+      location: editPrLocation,
+      connection: editPrConn,
+      ip: editPrIp,
+      assignedRole: editPrRole
+    });
+
+    addAuditLog("PRINTER", `Updated configurations of printer: ${editPrName}`);
+    setEditingPrinterId(null);
+  };
+
   // Windows Spooler and Driver Scanner Simulated Function
   const handleScanWindowsPrinters = () => {
     setWindowsScanStatus("scanning");
@@ -377,28 +560,172 @@ Thank you for staying at OmniSuite!
     alert("BULK COMPLETE: All 5 discovered Windows printers have been securely attached & default routing profiles updated.");
   };
 
+  const handleSendRawHexDebug = async () => {
+    if (!activeDebuggingPrinter) return;
+    setDebugSending(true);
+    setDebugStatus(null);
+    const printer = activeDebuggingPrinter;
+    
+    const timestamp = new Date().toLocaleTimeString();
+    let currentLogs = [`[${timestamp}] Initiating custom byte stream compile...`];
+    setDebugLogs(currentLogs);
+
+    try {
+      const cleanHex = debugHexInput.replace(/[^a-fA-F0-9]/g, "");
+      if (cleanHex.length === 0) {
+        throw new Error("No valid hex character tokens found. Input should contain paired HEX codes (e.g., 1B 40).");
+      }
+      if (cleanHex.length % 2 !== 0) {
+        throw new Error("Odd length of hex digits. Hex fields must form exact byte-byte pairs (each 2 characters long).");
+      }
+
+      const bytes = parseHexToUint8Array(debugHexInput);
+      currentLogs.push(`[${new Date().toLocaleTimeString()}] Hex compiled successfully. Byte array size: ${bytes.length} bytes.`);
+      
+      // Live decompile for immediate troubleshooting visibility
+      currentLogs.push(`[${new Date().toLocaleTimeString()}] Live decoding output sequence:`);
+      const decodedInfo = decodeEscPosBytes(bytes);
+      decodedInfo.forEach((step, idx) => {
+        currentLogs.push(`  Byte #${idx + 1}: ${step}`);
+      });
+      setDebugLogs([...currentLogs]);
+
+      const isPhysical = printer.connection?.includes("USB Controller") || printer.connection?.includes("HID Controller");
+      
+      if (isPhysical) {
+        const matches = printer.connection.match(/0x[0-9A-Fa-f]{4}/g);
+        if (matches && matches.length >= 2) {
+          const vendorId = matches[0];
+          const productId = matches[1];
+          const apiType = printer.connection.includes("USB") ? "WebUSB" : "WebHID";
+
+          currentLogs.push(`[${new Date().toLocaleTimeString()}] Transmitting stream to physical hardware interface ${apiType}...`);
+          setDebugLogs([...currentLogs]);
+
+          const response = await PrinterService.getInstance().sendRawCommand(
+            apiType,
+            vendorId,
+            productId,
+            bytes
+          );
+
+          if (response.success) {
+            currentLogs.push(`[${new Date().toLocaleTimeString()}] SUCCESS: ${response.bytesWritten} bytes dispatched over hardware channel.`);
+            currentLogs.push(`[${new Date().toLocaleTimeString()}] Hardware response detail: ${response.diagnostic}`);
+            setDebugLogs([...currentLogs]);
+            
+            setDebugStatus({
+              success: true,
+              message: `Success! Wrote ${response.bytesWritten} bytes to native printer controller port: ${response.diagnostic}`
+            });
+            addAuditLog("PRINTER", `Raw Hex Debugger successfully spooled ${bytes.length} bytes sequence directly to device ${printer.name}`);
+          } else {
+            throw new Error(`Device hardware ports reject or command buffer overflow: ${response.diagnostic}`);
+          }
+        } else {
+          throw new Error("Invalid hardware Vendor/Product addresses. Try unlinking and rebinding the direct physical port.");
+        }
+      } else {
+        // Mock simulation dry run
+        currentLogs.push(`[${new Date().toLocaleTimeString()}] Simulated dry-run spooler started for: '${printer.name}'...`);
+        // Simulate a small network latency
+        await new Promise(resolve => setTimeout(resolve, 500));
+        currentLogs.push(`[${new Date().toLocaleTimeString()}] Acknowledged binary stream. Complete matching layout successfully.`);
+        setDebugLogs([...currentLogs]);
+
+        setDebugStatus({
+          success: true,
+          message: `Emulation Success! Simulated a ${bytes.length}-byte custom ESC/POS protocol sequence to simulated queue successfully.`
+        });
+        addAuditLog("PRINTER", `Dry-run raw ESC/POS simulator processed ${bytes.length} bytes for queue: ${printer.name}`);
+      }
+    } catch (err: any) {
+      currentLogs.push(`[${new Date().toLocaleTimeString()}] ❌ Transport Aborted: ${err.message || err}`);
+      setDebugLogs([...currentLogs]);
+      setDebugStatus({
+        success: false,
+        message: err.message || "An unexpected parser or USB packet buffer overflow occurred."
+      });
+    } finally {
+      setDebugSending(false);
+    }
+  };
+
   // Trigger simulated Test Print Job
   const triggerTestPrint = (printer: PrinterConfig) => {
     setActiveTestingPrinter(printer);
     setTestProgress(10);
     setTestSuccess(false);
-    setTestMsg(`Locating active printer routing node: ${printer.name}...`);
+    const isWeb = printer.connection === "Web Browser Print" || printer.type === "Web Browser Printer";
+    setTestMsg(isWeb ? "Initializing local Web Browser Print engine..." : `Locating active printer routing node: ${printer.name}...`);
 
     const interval = setInterval(() => {
       setTestProgress(p => {
         if (p >= 100) {
           clearInterval(interval);
           setTestSuccess(true);
-          setTestMsg(`Raw ESC/POS byte-array package successfully acknowledged by printer processor!`);
-          addAuditLog("PRINTER", `Triggered successful test print folio receipt page on ${printer.name} [${printer.ip}]`);
+          
+          let transmissionNotes = "";
+          const isPhysical = printer.connection?.includes("USB Controller") || printer.connection?.includes("HID Controller");
+          if (isPhysical) {
+            const matches = printer.connection.match(/0x[0-9A-Fa-f]{4}/g);
+            if (matches && matches.length >= 2) {
+              const vendorId = matches[0];
+              const productId = matches[1];
+              const apiType = printer.connection.includes("USB") ? "WebUSB" : "WebHID";
+              
+              const testTicketTxt = 
+`========================================
+             OMNISUITE RESORT           
+          HARDWARE SPOOLER TEST         
+========================================
+PRINTER NAME: ${printer.name}
+TYPE/STYLE: ${printer.type}
+CONNECTION: ${printer.connection}
+IDENTIFIER: ${printer.ip}
+TIME: ${new Date().toLocaleString()}
+STATUS: SUCCESSFUL EMULATION BOUND
+----------------------------------------
+This is a live hardware test receipt.
+If you can read this text, your thermal
+printer physical interface is fully online,
+paired, and successfully communication-ready.
+========================================
+
+
+\n\n\n`;
+
+              PrinterService.getInstance().sendRawCommand(
+                apiType,
+                vendorId,
+                productId,
+                testTicketTxt
+              ).then((result) => {
+                if (result.success) {
+                  setTestMsg(`Direct hardware spool secure and dispatched! Result: ${result.diagnostic}`);
+                } else {
+                  setTestMsg(`Direct hardware spool failed: ${result.diagnostic}`);
+                }
+              }).catch((e: any) => {
+                setTestMsg(`Direct physical spool connection aborted: ${e.message}`);
+              });
+              
+              transmissionNotes = " and dispatched Web-layer Esc/Pos packets inline";
+            }
+          }
+          
+          if (!isPhysical) {
+            setTestMsg(isWeb ? "Web Browser print payload compilation ready!" : `Raw ESC/POS byte-array package successfully acknowledged by printer processor!`);
+          }
+          addAuditLog("PRINTER", `Triggered successful test print folio receipt page on ${printer.name} [${printer.ip}]${transmissionNotes}`);
           return 100;
         }
-        if (p === 30) setTestMsg(`Establishing handshakes packet transport on connection scope [${printer.connection}]`);
-        if (p === 65) setTestMsg(`Spooling customized document template schema. Buffer allocated...`);
-        if (p === 85) setTestMsg(`Pushing raster graphics payload inline...`);
+        if (p === 30) setTestMsg(isWeb ? "Acquiring container viewport resolution guidelines..." : `Establishing handshakes packet transport on connection scope [${printer.connection}]`);
+        if (p === 65) setTestMsg(isWeb ? "Formulating interactive high-fidelity HTML stylesheet draft..." : `Spooling customized document template schema. Buffer allocated...`);
+        if (p === 85) setTestMsg(isWeb ? "Readying local layout viewport for native print handover..." : `Pushing raster graphics payload inline...`);
         return p + 15;
       });
-    }, 450);
+    }, 400);
   };
 
   const handleFactoryReset = () => {
@@ -429,6 +756,220 @@ Thank you for staying at OmniSuite!
 
   return (
     <div className="space-y-6" id="settings-module-panel">
+      {ToastElement}
+
+      {/* Edit Printer Configuration Modal */}
+      {editingPrinterId && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" id="edit-printer-modal-wrapper">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 max-w-lg w-full space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b pb-3">
+              <h5 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                <Edit className="w-5 h-5 text-indigo-500" />
+                Edit Mounted Printer &amp; Port Settings
+              </h5>
+              <button 
+                onClick={() => setEditingPrinterId(null)}
+                className="text-slate-400 hover:text-slate-600 text-sm font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleEditPrinterSubmit} className="space-y-4">
+              {/* Form Grid */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="col-span-2 space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Printer Friendly Name</label>
+                  <input 
+                    type="text" 
+                    required 
+                    className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50 font-semibold focus:bg-white text-slate-800"
+                    value={editPrName} 
+                    onChange={(e) => setEditPrName(e.target.value)} 
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Paper/Device Style Spec</label>
+                  <select 
+                    className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50 font-semibold focus:bg-white text-slate-800"
+                    value={editPrType} 
+                    onChange={(e) => setEditPrType(e.target.value)}
+                  >
+                    <option value="Thermal Roll 80mm">Thermal Roll 80mm (Desktop Slip)</option>
+                    <option value="Thermal Roll 58mm">Thermal Roll 58mm (Mobile POS Slip)</option>
+                    <option value="Office LaserJet A4">Office LaserJet A4 (High Density Invoice)</option>
+                    <option value="Dot Matrix KOT">Dot Matrix KOT (Impact Duplicate Paper)</option>
+                    <option value="Laser / HID Port">Laser / HID Port</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Physical Placement Room</label>
+                  <input 
+                    type="text" 
+                    required 
+                    className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50 font-semibold focus:bg-white text-slate-800"
+                    value={editPrLocation} 
+                    onChange={(e) => setEditPrLocation(e.target.value)} 
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Task Queue Assignment</label>
+                  <select 
+                    className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50 font-semibold focus:bg-white text-slate-800"
+                    value={editPrRole} 
+                    onChange={(e) => setEditPrRole(e.target.value)}
+                  >
+                    <option value="All Receipts">All Receipts (Front Desk)</option>
+                    <option value="Bill Invoices">Bill Invoices (Checkout)</option>
+                    <option value="Kitchen Orders">Kitchen Orders (Kitchen F&amp;B)</option>
+                    <option value="Accounting Reports">Accounting Reports (Admin)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Connection Port Interface</label>
+                  <input 
+                    type="text" 
+                    required 
+                    placeholder="e.g. Wi-Fi Network, Bluetooth"
+                    className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50 font-semibold focus:bg-white text-slate-800"
+                    value={editPrConn} 
+                    onChange={(e) => setEditPrConn(e.target.value)} 
+                  />
+                </div>
+
+                <div className="col-span-2 space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Endpoint IP / Hardware Identification Address</label>
+                  <input 
+                    type="text" 
+                    required 
+                    placeholder="e.g. 192.168.1.15, Serial: XXX"
+                    className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50 font-semibold focus:bg-white font-mono text-slate-800"
+                    value={editPrIp} 
+                    onChange={(e) => setEditPrIp(e.target.value)} 
+                  />
+                </div>
+              </div>
+
+              {/* Dynamic Attachment of Physical hardware segment */}
+              <div className="border-t border-dashed border-slate-200 pt-3 space-y-2">
+                <span className="text-[10.5px] uppercase font-mono tracking-wider font-extrabold text-slate-700 flex items-center gap-1.5">
+                  🔌 Attach Discovered Scanned Port
+                </span>
+                <p className="text-[10px] text-slate-500 leading-tight">
+                  Automatically link this printer profile with any physically scanned USB/HID serial port found in the browser session.
+                </p>
+
+                {discoveredUsbPrinters.length === 0 ? (
+                  <div className="bg-slate-50 p-3 rounded-lg border border-slate-150 text-center space-y-2">
+                    <p className="text-[10px] text-slate-500">
+                      No active hardware endpoints detected in local scan cache.
+                    </p>
+                    <div className="flex justify-center gap-2">
+                      <button 
+                        type="button"
+                        disabled={isUsbScanning}
+                        onClick={scanUsbPrinters}
+                        className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold px-2.5 py-1 rounded border border-slate-200 transition cursor-pointer flex items-center gap-1.5"
+                      >
+                        {isUsbScanning ? (
+                          <>
+                            <span className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-ping"></span>
+                            Scanning Buses...
+                          </>
+                        ) : (
+                          "🔍 Emulate Hardware Bus Scan"
+                        )}
+                      </button>
+
+                      <button 
+                        type="button"
+                        onClick={async () => {
+                          const device = await requestPhysicalUsbDevice();
+                          if (device) {
+                            setEditPrConn(`USB Controller (${device.vendorId}:${device.productId})`);
+                            setEditPrIp(`Serial: ${device.serialNumber || "N/A"} (${device.apiType})`);
+                            setEditPrType(device.apiType === "WebUSB" ? "Thermal Roll 80mm" : "Laser / HID Port");
+                            alert(`Linked client printer to active WebUSB product: ${device.name}`);
+                          }
+                        }}
+                        className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2.5 py-1 rounded border border-indigo-100 transition cursor-pointer"
+                      >
+                        🔗 WebUSB Pair Dialog
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto bg-slate-50 p-2.5 rounded-lg border">
+                    {discoveredUsbPrinters.map((dev: any) => {
+                      const usbPath = `USB Controller (${dev.vendorId}:${dev.productId})`;
+                      const isCurrentlyBound = editPrConn === usbPath;
+
+                      return (
+                        <div 
+                          key={dev.id} 
+                          className={`p-2 rounded-md border flex items-center justify-between text-[11px] transition ${
+                            isCurrentlyBound 
+                              ? "bg-emerald-50 border-emerald-300 text-emerald-800" 
+                              : "bg-white border-slate-200 hover:border-indigo-300 text-slate-705 text-slate-700"
+                          }`}
+                        >
+                          <div>
+                            <p className="font-bold flex items-center gap-1">
+                              <span className={`w-1.5 h-1.5 rounded-full ${dev.status === "Online" ? "bg-emerald-500" : "bg-red-500"}`}></span>
+                              {dev.name}
+                            </p>
+                            <p className="text-[9.5px] text-slate-500 font-mono">
+                              {dev.apiType} &bull; {dev.vendorId}:{dev.productId} &bull; S/N: {dev.serialNumber || "N/A"}
+                            </p>
+                          </div>
+                          
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditPrConn(usbPath);
+                              setEditPrIp(`Serial: ${dev.serialNumber || "N/A"} (${dev.apiType})`);
+                              setEditPrType(dev.apiType === "WebUSB" ? "Thermal Roll 80mm" : "Laser / HID Port");
+                            }}
+                            className={`px-2.5 py-1 rounded text-[9.5px] font-bold transition cursor-pointer ${
+                              isCurrentlyBound 
+                                ? "bg-emerald-600 text-white cursor-default" 
+                                : "bg-indigo-600 hover:bg-indigo-500 text-white"
+                            }`}
+                          >
+                            {isCurrentlyBound ? "Linked ✓" : "Attach/Bind"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex justify-end gap-2 pt-3 border-t">
+                <button
+                  type="button"
+                  onClick={() => setEditingPrinterId(null)}
+                  className="bg-slate-100 hover:bg-slate-200 border border-slate-250 text-slate-700 font-bold rounded-lg px-4 py-2 text-xs transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg px-4 py-2 text-xs transition cursor-pointer shadow-xs"
+                >
+                  Save Modifications
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Dynamic Tester Overlay */}
       {activeTestingPrinter && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" id="print-simulator-modal-wrapper">
@@ -490,7 +1031,19 @@ Thank you for staying at OmniSuite!
               )}
             </div>
 
-            <div className="flex justify-end pt-2">
+            <div className="flex justify-end gap-2 pt-2">
+              {testSuccess && (activeTestingPrinter.connection === "Web Browser Print" || activeTestingPrinter.type === "Web Browser Printer") && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.print();
+                    addAuditLog("PRINTER", `Successfully triggered test print using native web browser print dialog`);
+                  }}
+                  className="bg-indigo-600 text-white font-bold rounded-lg px-4 py-1.5 text-xs hover:bg-indigo-700 transition cursor-pointer shadow-xs whitespace-nowrap"
+                >
+                  🖥️ Launch Browser Print
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setActiveTestingPrinter(null)}
@@ -499,6 +1052,282 @@ Thank you for staying at OmniSuite!
                 Close Spooler View
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ESC/POS Hex Command Debugger Overlay */}
+      {activeDebuggingPrinter && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" id="escpos-debugger-modal-wrapper">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 max-w-3xl w-full flex flex-col max-h-[90vh]">
+            
+            {/* Header */}
+            <div className="flex items-center justify-between border-b pb-3 mb-4">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-indigo-50 border border-indigo-100 rounded-lg">
+                  <Wrench className="w-5 h-5 text-indigo-600 animate-spin-slow" />
+                </div>
+                <div>
+                  <h5 className="font-extrabold text-slate-800 text-sm tracking-tight flex items-center gap-1.5">
+                    ESC/POS Terminal Command Debugger
+                  </h5>
+                  <p className="text-[10px] text-slate-450 font-sans">
+                    Verify direct byte array handshake compliance & printer command set capabilities.
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => {
+                  setActiveDebuggingPrinter(null);
+                  setDebugStatus(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 text-sm font-bold cursor-pointer transition p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Target Printer specs info */}
+            <div className="bg-slate-50 border border-slate-150 p-2.5 rounded-xl text-xs grid grid-cols-1 md:grid-cols-3 gap-2 mb-4 font-sans">
+              <div>
+                <span className="text-slate-400 block text-[9px] uppercase font-bold">Target Device Name</span>
+                <strong className="text-slate-750 font-extrabold">{activeDebuggingPrinter.name}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[9px] uppercase font-bold">Bound Connection Port</span>
+                <span className="font-mono bg-slate-100 text-slate-700 px-1.5 py-0.2 rounded text-[10px] inline-block mt-0.5">
+                  {activeDebuggingPrinter.connection || "No physical port bound"}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[9px] uppercase font-bold">Spooler Protocol Class</span>
+                <strong className="text-indigo-600">
+                  {activeDebuggingPrinter.connection?.includes("USB") ? "Hardware WebUSB (Class 0x07)" : (activeDebuggingPrinter.connection?.includes("HID") ? "Hardware WebHID" : "Emulated Spooler Context")}
+                </strong>
+              </div>
+            </div>
+
+            {/* Main Content Layout */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 overflow-y-auto pr-1">
+              
+              {/* Left Column: Command Entry & Presets (7 cols) */}
+              <div className="lg:col-span-7 space-y-4">
+                
+                {/* Micro Command Presets */}
+                <div className="space-y-1.5">
+                  <span className="text-[10px] uppercase font-extrabold tracking-wider text-slate-500 block">
+                    ⚡ Hardware Presets (Click to Populate)
+                  </span>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setDebugHexInput("1B 40")}
+                      className="bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-[10.5px] p-2 rounded-lg text-left transition cursor-pointer"
+                      title="ESC @ - Resets printer parameters to default state"
+                    >
+                      <span className="font-mono text-indigo-650 font-bold block text-[9.5px]">1B 40</span>
+                      <span className="text-slate-500 text-[9px]">Initialize (ESC @)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setDebugHexInput("0A")}
+                      className="bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-[10.5px] p-2 rounded-lg text-left transition cursor-pointer"
+                      title="LF - Advances paper by single line"
+                    >
+                      <span className="font-mono text-indigo-650 font-bold block text-[9.5px]">0A</span>
+                      <span className="text-slate-500 text-[9px]">Line Feed (LF)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setDebugHexInput("1D 56 01")}
+                      className="bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-[10.5px] p-2 rounded-lg text-left transition cursor-pointer"
+                      title="GS V 1 - Activates hardware knives to cut receipt paper"
+                    >
+                      <span className="font-mono text-indigo-650 font-bold block text-[9.5px]">1D 56 01</span>
+                      <span className="text-slate-500 text-[9px]">Partial Cut (GS V)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setDebugHexInput("07")}
+                      className="bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-[10.5px] p-2 rounded-lg text-left transition cursor-pointer"
+                      title="BEL - Sound internal chassis beep/buzzer"
+                    >
+                      <span className="font-mono text-indigo-650 font-bold block text-[9.5px]">07</span>
+                      <span className="text-slate-500 text-[9px]">Chassis Beep (BEL)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setDebugHexInput("1B 45 01 4F 4D 4E 49 1B 45 00 0A")}
+                      className="bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-[10.5px] p-2 rounded-lg text-left transition cursor-pointer"
+                      title="ESC E 1 'OMNI' ESC E 0 LF"
+                    >
+                      <span className="font-mono text-indigo-650 font-bold block text-[9.5px]">1B 45 01...</span>
+                      <span className="text-slate-500 text-[9px]">Bold Text Cycle</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setDebugHexInput("1B 2D 01 54 45 53 54 1B 2D 00 0A")}
+                      className="bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-[10.5px] p-2 rounded-lg text-left transition cursor-pointer"
+                      title="ESC - 1 'TEST' ESC - 0 LF"
+                    >
+                      <span className="font-mono text-indigo-650 font-bold block text-[9.5px]">1B 2D 01...</span>
+                      <span className="text-slate-500 text-[9px]">Underline Text</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Hex entry field */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] uppercase font-extrabold tracking-wider text-slate-500">
+                      📝 Raw Hexadecimal Sequence Stream (Space Separated)
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setDebugHexInput("")}
+                      className="text-[9.5px] font-extrabold text-slate-400 hover:text-red-500 cursor-pointer"
+                    >
+                      Clear Input
+                    </button>
+                  </div>
+                  
+                  <textarea
+                    rows={4}
+                    value={debugHexInput}
+                    onChange={(e) => {
+                      // Filter characters: only hex letters, numbers, spaces, commas permitted
+                      const val = e.target.value.replace(/[^a-fA-F0-9\s,]/gi, "");
+                      setDebugHexInput(val);
+                    }}
+                    placeholder="E.g., 1B 40 1B 45 01 48 45 4C 4C 4F 1B 45 00 0A 1D 56 01"
+                    className="w-full bg-slate-950 text-white font-mono text-xs p-3 rounded-lg border border-slate-800 focus:border-indigo-500 focus:outline-hidden whitespace-pre-wrap leading-relaxed shadow-inner"
+                  />
+                  <p className="text-[9.5px] text-slate-400 font-sans">
+                    Type or paste space-separated hex bytes. High-level commands like line feeds (`0A`), initialize (`1B 40`), beep (`07`), or bold (`1B 45 01`) allow debugging thermal layouts safely.
+                  </p>
+                </div>
+
+                {/* Status response notifications */}
+                {debugStatus && (
+                  <div className={`p-3 rounded-lg text-xs flex items-start gap-2 border animate-fade-in ${
+                    debugStatus.success 
+                      ? "bg-emerald-50 text-emerald-800 border-emerald-250" 
+                      : "bg-rose-50 text-rose-800 border-rose-250"
+                  }`}>
+                    <span className="mt-0.5">{debugStatus.success ? "✓" : "⚠"}</span>
+                    <div>
+                      <p className="font-bold">{debugStatus.success ? "Command Transmitted Successfully" : "Hardware Transmission Aborted"}</p>
+                      <p className="text-[10.5px] font-sans mt-0.5">{debugStatus.message}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Transmit Buttons */}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={debugSending || !debugHexInput}
+                    onClick={handleSendRawHexDebug}
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white text-xs font-bold py-2 px-4 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs disabled:cursor-not-allowed"
+                  >
+                    {debugSending ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                        Transmitting Hex...
+                      </>
+                    ) : (
+                      <>
+                        <Terminal className="w-3.5 h-3.5" />
+                        Transmit ESC/POS Hex Stream
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Right Column: Live Decompile & Logs (5 cols) */}
+              <div className="lg:col-span-5 flex flex-col space-y-4">
+                
+                {/* Live Decompile view */}
+                <div className="flex-1 flex flex-col min-h-[140px]">
+                  <span className="text-[10px] uppercase font-extrabold tracking-wider text-slate-500 block mb-1.5">
+                    🔎 Live Decompiler Preview (Realtime Stream decoding)
+                  </span>
+                  
+                  <div className="flex-1 bg-amber-50/20 border border-amber-200/50 p-3 rounded-lg overflow-y-auto max-h-[160px] text-[10.5px] font-mono leading-relaxed text-slate-700 space-y-1">
+                    {(() => {
+                      try {
+                        const cleanStr = debugHexInput.replace(/[^a-fA-F0-9]/g, "");
+                        if (!cleanStr) return <span className="text-stone-400 italic font-sans">No bytes entered. Input text above in HEX to begin live decompiling.</span>;
+                        const bytes = parseHexToUint8Array(cleanStr);
+                        const decompiledList = decodeEscPosBytes(bytes);
+                        return (
+                          <div className="flex flex-wrap gap-1 font-mono text-[9px]">
+                            {decompiledList.map((tag, idx) => {
+                              const isCommand = tag.startsWith("[");
+                              return (
+                                <span 
+                                  key={idx} 
+                                  className={`px-1 py-0.5 rounded leading-tight ${
+                                    isCommand 
+                                      ? "bg-indigo-100/60 text-indigo-805 border border-indigo-200/40 font-bold" 
+                                      : "bg-slate-100 text-slate-700 font-normal border border-slate-200"
+                                  }`}
+                                  title={`Byte Position #${idx + 1}`}
+                                >
+                                  {tag}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        );
+                      } catch (err: any) {
+                        return <span className="text-red-500 italic font-sans">Wait: {err.message || "Syntactic hex alignment mismatch."}</span>;
+                      }
+                    })()}
+                  </div>
+                </div>
+
+                {/* Hardware Terminal Logs Console */}
+                <div className="flex flex-col">
+                  <span className="text-[10px] uppercase font-extrabold tracking-wider text-slate-500 block mb-1.5">
+                    🖥️ Diagnostic Terminal Execution Logs
+                  </span>
+                  
+                  <div className="bg-slate-950 font-mono text-emerald-400 text-[10.5px] p-3 rounded-lg border border-slate-800 h-[190px] overflow-y-auto space-y-1 shadow-inner">
+                    {debugLogs.length === 0 ? (
+                      <p className="text-slate-500 italic">No command dispatched yet. Setup raw commands and execute transmission.</p>
+                    ) : (
+                      debugLogs.map((log, idx) => (
+                        <p key={idx} className="leading-snug break-all border-b border-white/5 pb-0.5 last:border-0">{log}</p>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+              </div>
+
+            </div>
+
+            {/* Footer */}
+            <div className="border-t pt-3 mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveDebuggingPrinter(null);
+                  setDebugStatus(null);
+                }}
+                className="bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-lg px-4 py-2 text-xs transition cursor-pointer"
+              >
+                Close Debugger Portal
+              </button>
+            </div>
+
           </div>
         </div>
       )}
@@ -1105,6 +1934,7 @@ Thank you for staying at OmniSuite!
                     <option value="Thermal Roll 58mm">Thermal Roll 58mm (Mobile POS Slip)</option>
                     <option value="Office LaserJet A4">Office LaserJet A4 (High Density Invoice)</option>
                     <option value="Dot Matrix KOT">Dot Matrix KOT (Impact Duplicate Paper)</option>
+                    <option value="Web Browser Printer">🌐 Web Browser Native Print Interface</option>
                   </select>
                 </div>
 
@@ -1114,12 +1944,21 @@ Thank you for staying at OmniSuite!
                     <select
                       className="text-xs border border-slate-205 rounded-lg p-2 bg-white font-semibold text-slate-755"
                       value={newPrConn}
-                      onChange={(e) => setNewPrConn(e.target.value as any)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setNewPrConn(val);
+                        if (val === "Web Browser Print" && (newPrIp === "" || newPrIp === "192.168.1.")) {
+                          setNewPrIp("browser://native-print");
+                        } else if (val !== "Web Browser Print" && newPrIp === "browser://native-print") {
+                          setNewPrIp("192.168.1.");
+                        }
+                      }}
                     >
                       <option value="Wi-Fi Network">📶 Wi-Fi Network</option>
                       <option value="Ethernet LAN">🔌 Ethernet LAN</option>
                       <option value="USB Local Cable">💻 USB Local Cable</option>
                       <option value="Bluetooth">📱 Bluetooth Sync</option>
+                      <option value="Web Browser Print">🖥️ Web Browser Print</option>
                     </select>
                   </div>
 
@@ -1329,6 +2168,24 @@ Thank you for staying at OmniSuite!
                     const isReceiptDefault = defReceiptPr === p.id;
                     const isReportDefault = defReportPr === p.id;
 
+                    // Evaluate actual live connection status
+                    let isOnline = p.status === "Online";
+                    const isPhysical = p.connection?.includes("USB Controller") || p.connection?.includes("HID Controller");
+
+                    if (isPhysical) {
+                      const matches = p.connection.match(/0x[0-9A-Fa-f]{4}/g);
+                      if (matches && matches.length >= 2) {
+                        const vendorId = matches[0].toUpperCase();
+                        const productId = matches[1].toUpperCase();
+                        const isConnected = discoveredUsbPrinters.some(
+                          (dev: any) => dev.vendorId.toUpperCase() === vendorId && dev.productId.toUpperCase() === productId
+                        );
+                        isOnline = isConnected;
+                      } else {
+                        isOnline = false;
+                      }
+                    }
+
                     return (
                       <div key={p.id} className="border border-slate-150 p-4 rounded-xl shadow-3xs hover:shadow-xs transition duration-200 bg-slate-50/50 space-y-3 flex flex-col justify-between">
                         <div className="space-y-1.5">
@@ -1336,10 +2193,17 @@ Thank you for staying at OmniSuite!
                             <span className="text-[9.5px] font-bold text-indigo-650 bg-indigo-50 border border-indigo-100 px-1.5 py-0.2 rounded font-mono">
                               {p.type}
                             </span>
-                            <span className="flex items-center gap-1 text-[10.5px] font-bold text-emerald-700">
-                              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                              {p.status}
-                            </span>
+                            {isOnline ? (
+                              <span className="flex items-center gap-1 text-[10.5px] font-bold text-emerald-700">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                Online
+                              </span>
+                            ) : (
+                              <span className="flex items-center gap-1 text-[10.5px] font-bold text-rose-600 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-full font-sans uppercase tracking-wider text-[8px]">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                                Offline
+                              </span>
+                            )}
                           </div>
 
                           <h5 className="font-extrabold text-slate-800 text-xs tracking-tight">{p.name}</h5>
@@ -1350,6 +2214,62 @@ Thank you for staying at OmniSuite!
                             <p className="font-bold text-slate-650 mt-1 uppercase tracking-wider text-[9px] bg-slate-100 p-1 rounded inline-block font-sans">
                               Target task: {p.assignedRole || (p.isDefault ? "All Receipts" : "Staff Report Output")}
                             </p>
+                          </div>
+
+                          {/* Hardware Port Binding Control Center */}
+                          <div className="mt-2.5 pt-2 border-t border-dashed border-slate-200 space-y-1.5" id={`card-port-linker-${p.id}`}>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] uppercase tracking-wider font-bold text-indigo-650 flex items-center gap-1 font-sans">
+                                <Cable className="w-3 h-3 text-indigo-500" /> Hardware Port Link
+                              </span>
+                              {(p.connection?.includes("USB Controller") || p.connection?.includes("HID Controller")) && (
+                                <span className="bg-emerald-100 text-emerald-800 text-[8px] font-extrabold font-mono uppercase px-1.5 py-0.2 rounded">
+                                  ACTIVE PORT
+                                </span>
+                              )}
+                            </div>
+                            
+                            {(p.connection?.includes("USB Controller") || p.connection?.includes("HID Controller")) ? (
+                              <div className="bg-emerald-50/70 border border-emerald-200 p-2 rounded-lg text-[10px] space-y-1.5 animate-fade-in">
+                                <p className="text-emerald-800 leading-tight">
+                                  ⚡ Bound successfully to physical hardware interface. Spooling ESC/POS output directly.
+                                </p>
+                                <div className="flex items-center justify-between text-[9px] text-emerald-700 font-mono">
+                                  <span>{p.connection.includes("USB") ? "Interface: USB Port" : "Interface: HID Port"}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUnbindHardware(p.id, p.name)}
+                                    className="text-red-500 hover:text-red-700 font-extrabold underline cursor-pointer uppercase text-[8.5px]"
+                                  >
+                                    Unlink Port
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="bg-slate-50 border border-slate-200 p-2 rounded-lg text-[10px] space-y-2">
+                                <p className="leading-tight text-slate-500 text-[10px]">
+                                  Lacks dedicated hardware. Trigger Web USB/HID selection flow to bind this entity to a physical port:
+                                </p>
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDirectBindUSB(p.id, p.name)}
+                                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded py-1 px-1.5 text-[9.5px] transition flex items-center justify-center gap-1 cursor-pointer shadow-3xs"
+                                    title="Open WebUSB device selection menu"
+                                  >
+                                    <Cable className="w-2.5 h-2.5" /> Bind WebUSB
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDirectBindHID(p.id, p.name)}
+                                    className="bg-slate-700 hover:bg-slate-650 text-white font-bold rounded py-1 px-1.5 text-[9.5px] transition flex items-center justify-center gap-1 cursor-pointer shadow-3xs"
+                                    title="Open WebHID device selection menu"
+                                  >
+                                    <Cpu className="w-2.5 h-2.5" /> Bind WebHID
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -1362,14 +2282,38 @@ Thank you for staying at OmniSuite!
                           </div>
                         )}
 
-                        <div className="flex items-center justify-between pt-2 border-t border-slate-100 mt-2">
-                          <button
-                            type="button"
-                            onClick={() => triggerTestPrint(p)}
-                            className="bg-indigo-600 hover:bg-indigo-750 text-white font-bold rounded-lg px-2.5 py-1 text-[10.5px] transition flex items-center gap-1 cursor-pointer shadow-3xs"
-                          >
-                            <Eye className="w-3 h-3" /> ESC/POS Test Job
-                          </button>
+                        <div className="flex items-center justify-between pt-2 border-t border-slate-100 mt-2 gap-2">
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => triggerTestPrint(p)}
+                              className="bg-indigo-600 hover:bg-indigo-750 text-white font-bold rounded-lg px-2.5 py-1 text-[10.5px] transition flex items-center gap-1 cursor-pointer shadow-3xs"
+                            >
+                              <Eye className="w-3 h-3" /> ESC/POS Test Job
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveDebuggingPrinter(p);
+                                setDebugStatus(null);
+                                setDebugLogs([]);
+                              }}
+                              className="bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg px-2.5 py-1 text-[10.5px] transition flex items-center gap-1 cursor-pointer shadow-3xs"
+                              title="Hardware command set debugger with hexadecimal builder"
+                            >
+                              <Wrench className="w-3 h-3" /> Hex Debugger
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => startEditingPrinter(p)}
+                              className="bg-slate-100 hover:bg-slate-200 text-slate-705 border border-slate-200 font-bold rounded-lg px-2.5 py-1 text-[10.5px] transition flex items-center gap-1 cursor-pointer shadow-3xs text-slate-700"
+                              title="Edit configurations & attach hardware"
+                            >
+                              <Edit className="w-3.5 h-3.5 text-slate-500" /> Edit Config
+                            </button>
+                          </div>
 
                           <button
                             type="button"
@@ -1554,6 +2498,9 @@ Thank you for staying at OmniSuite!
 
           {/* Direct USB & HID Hardware Discovery Port Bridge */}
           <WebUsbHidPrinterBridge />
+
+          {/* New Interactive Print Diagnostics Panel */}
+          <PrintDiagnosticsPanel />
         </div>
       )}
 

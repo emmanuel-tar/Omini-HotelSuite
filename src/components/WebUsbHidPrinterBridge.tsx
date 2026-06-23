@@ -29,7 +29,8 @@ export const WebUsbHidPrinterBridge: React.FC = () => {
     scanPhysicalPortsEmulated,
     spoolRawTestCommand,
     mountPrinterToOmniSuite,
-    clearScans
+    clearScans,
+    ToastElement
   } = usePrinter();
 
   const { printers } = useHMS();
@@ -83,7 +84,7 @@ export const WebUsbHidPrinterBridge: React.FC = () => {
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4 text-white shadow-xl">
-      
+      {ToastElement}
       {/* Header section with Dynamic Status indicators */}
       <div className="flex items-center justify-between border-b border-slate-850 pb-3">
         <div className="space-y-1">
